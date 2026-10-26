@@ -1,44 +1,24 @@
-// A local stand-in for the Apps Script web app, for testing only.
-// It speaks the same protocol as backend/Code.gs and, like Apps Script, answers every POST
-// with a 302 redirect to a GET that carries the JSON result.
-// Run: node tools/mock-sync.mjs [port]   → sync link: http://127.0.0.1:<port>/exec#testkey12345
+// Serves the real backend/Code.gs locally (through tools/gs-sim.mjs), for testing the app only.
+// Like Apps Script, it answers every POST with a 302 redirect to a GET that carries the JSON result.
+// Run: node tools/mock-sync.mjs [port]
+// Two test people are ready: http://127.0.0.1:<port>/exec#testkey12345 and …#testkey67890
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { loadCodeGs } from './gs-sim.mjs';
 
-const PORT = Number(process.argv[2]) || 18924;
-const KEY = 'testkey12345';
-const rows = new Map(); // id -> { id, type, updatedAt, deleted, syncedAt, json }
+const PORT = Number(process.argv[2]) || 18932;
+const { gs, props, sheets, call } = loadCodeGs();
+props.set('USERS', JSON.stringify({
+  testkey12345: { name: 'تجربة', sheet: 'تجربة' },
+  testkey67890: { name: 'تجربة 2', sheet: 'تجربة 2' },
+}));
+gs.sheet_('تجربة');
+gs.sheet_('تجربة 2');
+
 const echoes = new Map();
 const stats = { push: 0, pull: 0, ping: 0, bytesIn: 0, bytesOut: 0 };
-
-function handle(body) {
-  if (body.key !== KEY) return { ok: false, error: 'bad_key' };
-  const now = Date.now();
-  if (body.op === 'ping') { stats.ping++; return { ok: true, count: rows.size }; }
-  if (body.op === 'push') {
-    stats.push++;
-    let applied = 0;
-    for (const rec of body.records || []) {
-      if (!rec || typeof rec.id !== 'string') continue;
-      const cur = rows.get(rec.id);
-      const u = Number(rec.updatedAt) || 0;
-      if (cur && !(u > cur.updatedAt)) continue;
-      rows.set(rec.id, { id: rec.id, type: rec.type, updatedAt: u, deleted: !!rec.deleted, syncedAt: now, json: JSON.stringify(rec.data ?? null) });
-      applied++;
-    }
-    return { ok: true, applied, rejected: [], serverTime: now };
-  }
-  if (body.op === 'pull') {
-    stats.pull++;
-    const since = Number(body.since) || 0;
-    const records = [...rows.values()].filter((r) => r.syncedAt > since)
-      .map((r) => ({ id: r.id, type: r.type, updatedAt: r.updatedAt, deleted: r.deleted, data: JSON.parse(r.json) }));
-    return { ok: true, records, serverTime: now };
-  }
-  return { ok: false, error: 'bad_op' };
-}
-
 const cors = { 'Access-Control-Allow-Origin': '*' };
+
 http.createServer((req, res) => {
   const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
   if (req.method === 'POST' && url.pathname === '/exec') {
@@ -48,9 +28,15 @@ http.createServer((req, res) => {
     req.on('end', () => {
       stats.bytesIn += Buffer.byteLength(raw);
       let out;
-      try { out = handle(JSON.parse(raw)); } catch (e) { out = { ok: false, error: 'server: ' + e.message }; }
+      try {
+        const body = JSON.parse(raw);
+        if (body.op in stats) stats[body.op]++;
+        out = JSON.stringify(call(body));
+      } catch (e) {
+        out = JSON.stringify({ ok: false, error: 'server: ' + e.message });
+      }
       const t = randomUUID();
-      echoes.set(t, JSON.stringify(out));
+      echoes.set(t, out);
       res.writeHead(302, { ...cors, Location: `/echo?t=${t}` });
       res.end();
     });
@@ -65,10 +51,12 @@ http.createServer((req, res) => {
     return;
   }
   if (req.method === 'GET' && url.pathname === '/_debug') {
+    const perSheet = {};
+    for (const [name, s] of sheets) if (name !== 'Sheet1') perSheet[name] = s.rows.slice(1).map((r) => r[0]);
     res.writeHead(200, { ...cors, 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ stats, rows: [...rows.values()].map((r) => ({ id: r.id, type: r.type, updatedAt: r.updatedAt, deleted: r.deleted })) }));
+    res.end(JSON.stringify({ stats, sheets: perSheet }));
     return;
   }
   res.writeHead(404, cors);
   res.end();
-}).listen(PORT, '127.0.0.1', () => console.log(`mock sync on http://127.0.0.1:${PORT}/exec#${KEY}`));
+}).listen(PORT, '127.0.0.1', () => console.log(`Code.gs on http://127.0.0.1:${PORT}/exec  keys: #testkey12345  #testkey67890`));
