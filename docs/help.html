@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>سوّ نسختك الاحتياطية · تماريني</title>
+<meta name="theme-color" content="#15171A">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="band">
+  <div class="band-in">
+    <a class="back" href="./" aria-label="ارجع للتطبيق">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+    </a>
+    <div class="titles">
+      <h1>سوّ نسختك الاحتياطية</h1>
+      <p>جدول Google Sheets في حسابك أنت</p>
+    </div>
+  </div>
+</header>
+
+<main class="main no-tabs">
+  <section class="card guide-intro">
+    <p>تمارينك تنحفظ في جدول Google Sheets في <b>حسابك أنت</b>، وما أحد غيرك يشوفها. تسويه مرة وحدة بس، وبعدها لو حذفت التطبيق أو غيّرت جوالك ترجع كل بياناتك.</p>
+    <p class="fine">تحتاج <b>كمبيوتر</b> وحساب Google، وتاخذ تقريبًا ٥ دقايق. إذا ما عندك كمبيوتر، خلّ أحد يسويها لك من كمبيوتره وأنت مسجّل دخول بحسابك.</p>
+  </section>
+
+  <ol class="steps">
+    <li class="card">
+      <h2>سوّ جدول جديد</h2>
+      <p>افتح <a href="https://sheets.new" target="_blank" rel="noopener">sheets.new</a> بحسابك، وسمّ الجدول «تماريني».</p>
+    </li>
+    <li class="card">
+      <h2>افتح محرر السكربت</h2>
+      <p>من القائمة اللي فوق اختر <b dir="ltr">Extensions → Apps Script</b>.</p>
+    </li>
+    <li class="card">
+      <h2>الصق الكود</h2>
+      <p>امسح الكود الموجود في المحرر، وانسخ الكود من الزر تحت والصقه مكانه، بعدين اضغط <b>Save</b> (أيقونة القرص).</p>
+      <button class="btn primary block" type="button" id="copy">انسخ الكود</button>
+      <p class="msg" id="copy-msg" role="status"></p>
+      <textarea class="field code" id="code" readonly hidden></textarea>
+    </li>
+    <li class="card">
+      <h2>انشره كـ Web app</h2>
+      <p>اضغط <b dir="ltr">Deploy → New deployment</b>، ومن أيقونة الترس اختر <b>Web app</b>، واضبط:</p>
+      <ul>
+        <li><b dir="ltr">Execute as: Me</b></li>
+        <li><b dir="ltr">Who has access: Anyone</b></li>
+      </ul>
+      <p>بعدين اضغط <b>Deploy</b>.</p>
+    </li>
+    <li class="card">
+      <h2>اعطه الصلاحية</h2>
+      <p>اضغط <b>Authorize access</b> واختر حسابك. إذا طلعت لك «Google hasn't verified this app»، اضغط <b>Advanced</b> وبعدها <b dir="ltr">Go to … (unsafe)</b>. هذا طبيعي، لأن السكربت في حسابك أنت وما نشرته Google.</p>
+    </li>
+    <li class="card">
+      <h2>انسخ رابط Web app</h2>
+      <p>بعد النشر بيطلع لك <b>Web app URL</b>، وهو ينتهي بـ <b dir="ltr">/exec</b>. انسخه.</p>
+    </li>
+    <li class="card">
+      <h2>طلّع رابط المزامنة</h2>
+      <p>ارجع لصفحة الجدول وحدّثها. بتطلع قائمة جديدة فوق اسمها <b>تماريني</b>. اختر منها <b>رابط المزامنة</b>، والصق رابط Web app لما يطلبه منك.</p>
+    </li>
+    <li class="card">
+      <h2>الصقه في التطبيق</h2>
+      <p>انسخ رابط المزامنة وأرسله لنفسك، مثلًا في الملاحظات أو واتساب. بعدين افتح «تماريني» على جوالك من الأيقونة اللي على الشاشة الرئيسية، والصقه في خانة «رابط المزامنة».</p>
+    </li>
+  </ol>
+
+  <section class="card">
+    <h2 class="guide-h">انتبه</h2>
+    <ul class="guide-notes">
+      <li><b>احفظ رابط المزامنة في الملاحظات.</b> لو حذفت التطبيق، تلصقه مرة ثانية وترجع بياناتك.</li>
+      <li><b>لا تعطي رابطك أحد.</b> اللي معه رابطك يقدر يشوف تمارينك ويعدّلها.</li>
+      <li><b>لو انتشر رابطك،</b> من قائمة «تماريني» في الجدول اختر «رابط جديد»، والصق الجديد في التطبيق من تبويب «السجل».</li>
+    </ul>
+  </section>
+
+  <a class="btn quiet block" href="./">ارجع للتطبيق</a>
+</main>
+
+<script>
+(() => {
+  const btn = document.getElementById('copy');
+  const msg = document.getElementById('copy-msg');
+  const box = document.getElementById('code');
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    msg.className = 'msg';
+    msg.textContent = 'يجيب الكود…';
+    let code = '';
+    try {
+      const res = await fetch('Code.gs', { cache: 'no-store' });
+      if (!res.ok) throw new Error(String(res.status));
+      code = await res.text();
+    } catch (e) {
+      msg.className = 'msg err';
+      msg.textContent = 'ما قدرنا نجيب الكود. تأكد من الإنترنت وجرّب مرة ثانية.';
+      btn.disabled = false;
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(code);
+      msg.className = 'msg ok';
+      msg.textContent = 'نسخنا الكود. الصقه في محرر Apps Script.';
+    } catch (e) {
+      box.value = code;
+      box.hidden = false;
+      box.focus();
+      box.select();
+      msg.className = 'msg';
+      msg.textContent = 'ما قدرنا ننسخه لحالنا. الكود محدد تحت، انسخه بنفسك (Ctrl+C).';
+    }
+    btn.disabled = false;
+  });
+})();
+</script>
+</body>
+</html>

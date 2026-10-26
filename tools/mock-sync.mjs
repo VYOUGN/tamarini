@@ -1,19 +1,17 @@
-// Serves the real backend/Code.gs locally (through tools/gs-sim.mjs), for testing the app only.
+// Serves the real docs/Code.gs locally (through tools/gs-sim.mjs), for testing the app only.
 // Like Apps Script, it answers every POST with a 302 redirect to a GET that carries the JSON result.
-// Run: node tools/mock-sync.mjs [port]
-// Two test people are ready: http://127.0.0.1:<port>/exec#testkey12345 and …#testkey67890
+// One server is one person's spreadsheet. Run a second one on another port to act as someone else.
+// Run: node tools/mock-sync.mjs [port] [key]   → sync link: http://127.0.0.1:<port>/exec#<key>
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { loadCodeGs } from './gs-sim.mjs';
 
 const PORT = Number(process.argv[2]) || 18932;
+const KEY = process.argv[3] || 'testkey12345';
 const { gs, props, sheets, call } = loadCodeGs();
-props.set('USERS', JSON.stringify({
-  testkey12345: { name: 'تجربة', sheet: 'تجربة' },
-  testkey67890: { name: 'تجربة 2', sheet: 'تجربة 2' },
-}));
-gs.sheet_('تجربة');
-gs.sheet_('تجربة 2');
+props.set('SHEET_ID', 'sheet-1');
+props.set('KEY', KEY);
+gs.sheet_();
 
 const echoes = new Map();
 const stats = { push: 0, pull: 0, ping: 0, bytesIn: 0, bytesOut: 0 };
@@ -59,4 +57,4 @@ http.createServer((req, res) => {
   }
   res.writeHead(404, cors);
   res.end();
-}).listen(PORT, '127.0.0.1', () => console.log(`Code.gs on http://127.0.0.1:${PORT}/exec  keys: #testkey12345  #testkey67890`));
+}).listen(PORT, '127.0.0.1', () => console.log(`Code.gs on http://127.0.0.1:${PORT}/exec#${KEY}`));

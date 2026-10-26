@@ -1,9 +1,10 @@
 // Keeps the whole app on the phone so it opens in the gym with no internet.
 // Bump VERSION whenever any file below changes; the phone picks up the new copy on its next open.
-const VERSION = 'tamarini-v1';
+const VERSION = 'tamarini-v2';
 const FILES = [
   './',
   './index.html',
+  './help.html',
   './styles.css',
   './app.js',
   './manifest.webmanifest',
@@ -31,7 +32,8 @@ self.addEventListener('fetch', (e) => {
   e.respondWith(
     caches.match(req, { ignoreSearch: true }).then((hit) => {
       if (hit) return hit;
-      if (req.mode === 'navigate') return caches.match('./index.html').then((page) => page || fetch(req));
+      // A page that isn't cached (or a link with a query) tries the network, and falls back to the app.
+      if (req.mode === 'navigate') return fetch(req).catch(() => caches.match('./index.html'));
       return fetch(req);
     })
   );

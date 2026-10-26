@@ -602,12 +602,13 @@ function screenSetup() {
     <h2>هلا! هذا «تماريني»</h2>
     <p>جدول تمارينك، وجولاتك، وتقدّم أوزانك. يشتغل في النادي حتى بدون إنترنت.</p>
     <section class="card form">
-      <p><b>عندك رابط مزامنة؟</b> اربطه عشان ينحفظ تقدمك في Google Sheets وما يضيع لو حذفت التطبيق. ولو كان لك بيانات قبل، بترجع كلها.</p>
+      <p><b>عندك رابط مزامنة؟</b> اربطه عشان ينحفظ تقدمك في جدول Google Sheets في حسابك، وما يضيع لو حذفت التطبيق. ولو كان لك بيانات قبل، بترجع كلها.</p>
       <label for="sync-link">رابط المزامنة
         <textarea class="field" id="sync-link" rows="3" placeholder="https://script.google.com/macros/s/…/exec#…" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea>
       </label>
       <button class="btn primary block" type="button" data-act="setup-connect">اربط وابدأ</button>
       <p class="msg" id="link-msg" role="status"></p>
+      <a class="link" href="help.html">ما عندك رابط؟ هذي طريقة تسويه</a>
     </section>
     <div class="or">أو</div>
     <button class="btn quiet block" type="button" data-act="setup-skip">ابدأ بدون نسخ احتياطي</button>
@@ -1002,7 +1003,7 @@ function syncCard() {
     <div class="sec-title flush"><h2>النسخ الاحتياطي</h2></div>
     <div class="sync-state" data-s="${st.s}" role="status"><i></i><span>${esc(st.long)}</span></div>`;
   if (meta.sync && !UI.linkEdit) {
-    h += `<p class="fine">كل تغيير يرتفع لجدول Google Sheets أول ما يكون فيه إنترنت. لو حذفت التطبيق، ثبّته من جديد والصق نفس الرابط، وترجع بياناتك كلها.</p>
+    h += `<p class="fine">كل تغيير يرتفع لجدولك في Google Sheets أول ما يكون فيه إنترنت. لو حذفت التطبيق، ثبّته من جديد والصق نفس الرابط، وترجع بياناتك كلها.</p>
       <div class="btn-row"><button class="btn primary" type="button" data-act="sync-now">ارفع الحين</button><button class="btn quiet" type="button" data-act="copy-link">انسخ رابط المزامنة</button></div>
       <div><button class="link" type="button" data-act="edit-link">غيّر الرابط</button></div>`;
   } else {
@@ -1011,6 +1012,7 @@ function syncCard() {
         <label for="sync-link">رابط المزامنة<textarea class="field" id="sync-link" rows="3" placeholder="https://script.google.com/macros/s/…/exec#…" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea></label>
         <button class="btn primary block" type="button" data-act="connect">اربط</button>
         <p class="msg" id="link-msg" role="status"></p>
+        <div><a class="link" href="help.html">ما عندك رابط؟ هذي طريقة تسويه</a></div>
         ${UI.linkEdit ? '<button class="link" type="button" data-act="cancel-link">إلغاء</button>' : ''}
       </div>`;
   }
@@ -1231,7 +1233,7 @@ const actions = {
   'copy-link': async () => {
     const text = `${meta.sync.url}#${meta.sync.key}`;
     try { await navigator.clipboard.writeText(text); toast('نسخنا الرابط. احفظه في الملاحظات'); }
-    catch (e) { toast('ما قدرنا ننسخ. الرابط موجود عند اللي جهّز التطبيق'); }
+    catch (e) { toast('ما قدرنا ننسخ. تلقى الرابط في جدولك: قائمة تماريني ثم رابط المزامنة'); }
   },
   export: () => exportBackup(),
   import: () => $('#import-file').click(),

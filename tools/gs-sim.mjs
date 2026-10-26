@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const CODE = join(dirname(fileURLToPath(import.meta.url)), '..', 'backend', 'Code.gs');
+const CODE = join(dirname(fileURLToPath(import.meta.url)), '..', 'docs', 'Code.gs');
 
 function makeSheet(name) {
   const rows = [];
@@ -35,8 +35,8 @@ function makeSheet(name) {
   return { getName: () => name, getLastRow: () => rows.length, getRange: range, setFrozenRows() {}, rows };
 }
 
-export function loadCodeGs({ devUrl = 'https://script.google.com/macros/s/SIM/dev' } = {}) {
-  const props = new Map();
+// Pass the same `props` with a different `sheetId` to simulate someone copying a spreadsheet.
+export function loadCodeGs({ devUrl = 'https://script.google.com/macros/s/SIM/dev', sheetId = 'sheet-1', props = new Map() } = {}) {
   const sheets = new Map([['Sheet1', makeSheet('Sheet1')]]);
   const prompts = []; // queued answers: string = OK with that text, null = Cancel
   const log = { alerts: [], dialogs: [], menu: [] };
@@ -67,6 +67,7 @@ export function loadCodeGs({ devUrl = 'https://script.google.com/macros/s/SIM/de
     SpreadsheetApp: {
       getUi: () => ui,
       getActiveSpreadsheet: () => ({
+        getId: () => sheetId,
         getSheetByName: (n) => sheets.get(n) || null,
         insertSheet: (n) => { if (sheets.has(n)) throw new Error(`sheet exists: ${n}`); const s = makeSheet(n); sheets.set(n, s); return s; },
         getSheets: () => [...sheets.values()],

@@ -165,6 +165,26 @@ h2, h3 { text-wrap: balance; }
 .btn-row { display: flex; gap: 10px; flex-wrap: wrap; }
 .btn-row > .btn { flex: 1 1 140px; }
 .link { border: 0; background: none; padding: 6px 0; color: var(--accent); font-weight: 700; }
+a.link { display: inline-block; text-decoration: none; }
+a.btn, a.back { text-decoration: none; }
+
+/* ---------- setup guide (help.html) ---------- */
+.guide-intro p { margin: 0 0 8px; line-height: 1.8; }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; counter-reset: step; }
+.steps > li { counter-increment: step; position: relative; padding-inline-start: 60px; }
+.steps > li::before {
+  content: counter(step);
+  position: absolute; inset-inline-start: 16px; top: 16px;
+  width: 30px; height: 30px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--accent); color: var(--accent-ink);
+  font-weight: 800; font-size: 0.9rem;
+}
+.steps h2, .guide-h { margin: 0 0 6px; font-size: 1.05rem; font-weight: 800; }
+.steps p { margin: 0 0 8px; line-height: 1.8; }
+.steps ul, .guide-notes { margin: 0 0 8px; padding-inline-start: 20px; line-height: 1.8; }
+.steps a { color: var(--accent); font-weight: 700; }
+.code { height: 160px; direction: ltr; text-align: left; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.75rem; font-weight: 400; padding: 8px; }
 
 /* ---------- today ---------- */
 .hero h2 { margin: 2px 0 2px; font-size: 1.6rem; font-weight: 800; line-height: 1.3; }
