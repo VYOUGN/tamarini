@@ -1,4 +1,4 @@
-// Runs backend/Code.gs in Node with small stand-ins for the Apps Script services it uses,
+// Runs docs/Code.gs in Node with small stand-ins for the Apps Script services it uses,
 // so the sync endpoint and the people menu can be tested without a Google account.
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
