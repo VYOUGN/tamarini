@@ -40,6 +40,7 @@ const dtf = (o) => new Intl.DateTimeFormat(LOC, o);
 const F = {
   long: dtf({ weekday: 'long', day: 'numeric', month: 'long' }),
   dm: dtf({ day: 'numeric', month: 'long' }),
+  dmy: dtf({ day: 'numeric', month: 'long', year: 'numeric' }),
   my: dtf({ month: 'long', year: 'numeric' }),
   wd: dtf({ weekday: 'long' }),
   time: dtf({ hour: 'numeric', minute: '2-digit' }),
@@ -57,6 +58,7 @@ const FORMS = {
   rep: ['عدّة واحدة', 'عدّتان', 'عدّات', 'عدّة'],
   min: ['دقيقة واحدة', 'دقيقتان', 'دقائق', 'دقيقة'],
   hr: ['ساعة', 'ساعتين', 'ساعات', 'ساعة'],
+  entry: ['تسجيل واحد', 'تسجيلان', 'تسجيلات', 'تسجيلًا'],
 };
 function cnt(n, k) {
   const f = FORMS[k];
@@ -174,6 +176,11 @@ function sane(r) {
   if (r.type === 'routine') r.items = Array.isArray(r.items) ? r.items.filter((it) => it && it.ex) : [];
   if (r.type === 'schedule' && (!r.days || typeof r.days !== 'object')) r.days = {};
   if (r.type === 'prefs' && (!r.values || typeof r.values !== 'object')) r.values = {};
+  if (r.type === 'body') {
+    if (typeof r.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(r.date)) return r.deleted ? r : null;
+    for (const k of BODY_KEYS) r[k] = toNum(r[k]);
+  }
+  if (r.type === 'profile') { r.height = toNum(r.height); r.goalKg = toNum(r.goalKg); }
   return r;
 }
 async function loadAll() {
@@ -258,7 +265,49 @@ function trainedDates() {
 // The unfinished workout from today, or one started in the last 8 hours (a workout that runs past midnight).
 const ACTIVE_FOR_MS = 8 * 3600e3;
 const activeToday = () => sessionsDesc().find((s) => !s.finishedAt && (s.date === todayKey() || Date.now() - (s.startedAt || 0) < ACTIVE_FOR_MS)) || null;
-const hasUserData = () => [...R.values()].some((r) => r.type === 'routine' || r.type === 'session' || r.type === 'schedule');
+const hasUserData = () => [...R.values()].some((r) => r.type === 'routine' || r.type === 'session' || r.type === 'schedule' || r.type === 'body');
+
+/* ============================== body ============================== */
+// One record per day: { id: 'body_<date>', type: 'body', date, kg, waist, chest, arm, thigh, fat }. 0 means not measured that day.
+const MEASURES = [['waist', 'الخصر', 'سم'], ['chest', 'الصدر', 'سم'], ['arm', 'الذراع', 'سم'], ['thigh', 'الفخذ', 'سم'], ['fat', 'نسبة الدهون', '%']];
+const BODY_KEYS = ['kg', ...MEASURES.map((m) => m[0])];
+const bodyLimits = (k) => (k === 'kg' ? [20, 400, 'الوزن', 'كجم'] : k === 'fat' ? [2, 70, 'نسبة الدهون', '%'] : [10, 300, MEASURES.find((m) => m[0] === k)[1], 'سم']);
+const bodyRecs = () => [...R.values()].filter((r) => r.type === 'body' && live(r) && BODY_KEYS.some((k) => r[k] > 0)).sort((a, b) => (a.date < b.date ? -1 : 1));
+const weighIns = () => bodyRecs().filter((r) => r.kg > 0);
+// The weigh-in that applies on a date: the last one on or before it, else the first one after.
+function bodyKgOn(date) {
+  const ws = weighIns();
+  let hit = null;
+  for (const r of ws) { if (r.date <= date) hit = r; else break; }
+  return hit || ws[0] || null;
+}
+// Height and goal live in their own record, so resetting the settings leaves them alone.
+function profile() {
+  const r = R.get('profile');
+  return { height: (live(r) && r.height) || 0, goalKg: (live(r) && r.goalKg) || 0 };
+}
+const dayNum = (k) => Math.round(dateOf(k).getTime() / 864e5);
+// pts: [{ date, v }] sorted by date. The average of each point and the ones in the `days` before it (null when it's alone).
+const movingAvg = (pts, days) => pts.map((p, i) => {
+  const win = pts.slice(0, i + 1).filter((q) => dayNum(p.date) - dayNum(q.date) < days);
+  return win.length > 1 ? round1(win.reduce((a, q) => a + q.v, 0) / win.length) : null;
+});
+// Slope of a least-squares line through the last `days` days of points, in units per day (null without two weeks of data).
+function trend(pts, days) {
+  if (!pts.length) return null;
+  const end = dayNum(pts[pts.length - 1].date);
+  const win = pts.filter((p) => end - dayNum(p.date) <= days);
+  if (win.length < 2 || end - dayNum(win[0].date) < 7) return null;
+  const xs = win.map((p) => dayNum(p.date)), mx = xs.reduce((a, x) => a + x, 0) / xs.length;
+  const my = win.reduce((a, p) => a + p.v, 0) / win.length;
+  let num = 0, den = 0;
+  win.forEach((p, i) => { num += (xs[i] - mx) * (p.v - my); den += (xs[i] - mx) ** 2; });
+  return den ? num / den : null;
+}
+function bmiInfo(kgV, cm) {
+  const v = round1(kgV / (cm / 100) ** 2);
+  return { v, cat: v < 18.5 ? 'نحيف' : v < 25 ? 'طبيعي' : v < 30 ? 'زايد' : 'سمنة' };
+}
 
 /* ============================== settings ============================== */
 // Settings are a normal record, so they're backed up and come back after a reinstall like everything else.
@@ -708,11 +757,13 @@ const UI = {
   tab: 'today', screen: 'today', stack: [],
   sessionId: null, draft: null, pickFor: null, pickQuery: '', newExFor: null,
   progEx: null, progRange: 90, linkEdit: false, dirtyRender: false, coach: null, linkDraft: '', rest: null,
+  bodyRange: 90, bodyDate: null, bodyMore: false, bodyProfile: false, bodyMeasure: null, bodyAll: false,
+  bodyDraft: null, // { date, vals } typed into the body form but not saved yet, so a re-render keeps it
 };
 const isField = (el) => !!el && main.contains(el) && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
 
 function go(tab) {
-  UI.tab = tab; UI.screen = tab; UI.stack = []; UI.linkEdit = false;
+  UI.tab = tab; UI.screen = tab; UI.stack = []; UI.linkEdit = false; UI.bodyDate = null;
   render();
   window.scrollTo(0, 0);
 }
@@ -826,6 +877,22 @@ function doneCard(s) {
     <div><button class="link" type="button" data-act="open-session" data-sid="${s.id}">افتح التمرين</button></div>
   </section>`;
 }
+// A nudge to weigh in when the last weigh-in is over a week old. «لاحقًا» hides it for 3 days on this phone.
+function weighCard() {
+  const t = todayKey();
+  if (meta.bodySnooze && meta.bodySnooze > t) return '';
+  const last = weighIns().slice(-1)[0];
+  if (last && last.date > addDays(t, -7)) return '';
+  return `<section class="card weigh">
+    <div class="sec-title flush"><h2>سجّل وزنك</h2></div>
+    <p class="fine">${last ? `آخر مرة سجّلته ${fmtDay(last.date)}، وكان ${round1(last.kg)} كجم.` : 'سجّله مرة بالأسبوع، وتشوف تقدّمه في تبويب «التقدّم».'}</p>
+    <div class="weigh-row">
+      <input class="field" data-body="kg" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="${esc(bodyDraftFor(t).kg || '')}" placeholder="${last ? round1(last.kg) : 'كم كيلو؟'}" aria-label="وزنك اليوم بالكيلو">
+      <button class="btn primary" type="button" data-act="body-save">سجّل</button>
+    </div>
+    <div><button class="link" type="button" data-act="body-snooze">لاحقًا</button></div>
+  </section>`;
+}
 function screenToday() {
   const t = todayKey();
   const act = activeToday();
@@ -851,7 +918,7 @@ function screenToday() {
       <p class="sub">العضل يكبر وأنت مرتاح. وإذا تبي تتمرّن، اختر تمرين من تحت.</p>
     </section>`;
   }
-  h += weekCard();
+  h += weighCard() + weekCard();
   const others = routines().filter((r) => !rt || r.id !== rt.id);
   h += `<div class="sec-title"><h2>تمرين ثاني</h2></div><div class="choice-list">
     ${others.map((r) => `<button class="choice" type="button" data-act="start" data-rt="${r.id}"><span>${esc(r.name)}</span><span>${cnt(r.items.length, 'ex')}</span></button>`).join('')}
@@ -1214,11 +1281,12 @@ function niceRange(min, max) {
   if (floor0 && lo < 0) lo = 0;
   return { lo, hi, step };
 }
-function lineChart(pts, label) {
+// `goal` (optional) draws a flat dotted line at that value and keeps it in view.
+function lineChart(pts, label, goal = 0) {
   const W = 340, H = 200, L = 40, RR = 16, T = 18, B = 26;
   const iw = W - L - RR, ih = H - T - B;
   const xs = pts.map((p) => p.x), x0 = Math.min(...xs), x1 = Math.max(...xs);
-  const yv = pts.flatMap((p) => (p.y2 != null ? [p.y, p.y2] : [p.y]));
+  const yv = pts.flatMap((p) => (p.y2 != null ? [p.y, p.y2] : [p.y])).concat(goal ? [goal] : []);
   const { lo, hi, step } = niceRange(Math.min(...yv), Math.max(...yv));
   const sx = (x) => (x1 === x0 ? L + iw / 2 : L + ((x - x0) / (x1 - x0)) * iw);
   const sy = (y) => T + (1 - (y - lo) / (hi - lo)) * ih;
@@ -1226,6 +1294,10 @@ function lineChart(pts, label) {
   for (let v = lo; v <= hi + 1e-9; v += step) {
     const y = sy(v).toFixed(1);
     g += `<line class="grid" x1="${L}" x2="${W - RR}" y1="${y}" y2="${y}"/><text x="${L - 6}" y="${(+y + 3.5).toFixed(1)}" text-anchor="end">${round2(v)}</text>`;
+  }
+  if (goal) {
+    const gy = sy(goal).toFixed(1);
+    g += `<line class="goal" x1="${L}" x2="${W - RR}" y1="${gy}" y2="${gy}"/><text class="goal-t" x="${L + 4}" y="${(+gy - 4).toFixed(1)}" text-anchor="start">الهدف ${round2(goal)}</text>`;
   }
   const line = (k) => pts.filter((p) => p[k] != null).map((p, i) => `${i ? 'L' : 'M'}${sx(p.x).toFixed(1)},${sy(p[k]).toFixed(1)}`).join('');
   const base = (T + ih).toFixed(1);
@@ -1263,8 +1335,150 @@ function attendanceCard() {
     <div class="legend"><span><i></i>أيام تمرّنت فيها</span>${planned ? `<span><i class="d"></i>المخطط: ${cnt(planned, 'day')}</span>` : ''}</div>
   </section>`;
 }
+/* ---------- body ---------- */
+const bodyDraftFor = (date) => (UI.bodyDraft && UI.bodyDraft.date === date ? UI.bodyDraft.vals : {});
+const RANGES =[[30, 'شهر'], [90, '3 شهور'], [365, 'سنة'], [0, 'الكل']];
+const sgn = (n) => `${n > 0 ? '+' : n < 0 ? '−' : ''}${Math.abs(round1(n))}`;
+const fmtDay = (k) => fmt(k.slice(0, 4) === todayKey().slice(0, 4) ? F.dm : F.dmy, k);
+const kgPerWeek = (slope) => `<bdi dir="ltr">${sgn(slope * 7)}</bdi> كجم بالأسبوع`;
+// Every body input carries data-body="<field>"; «سجّل» saves the ones on screen into that day's record.
+function bodyForm(date, t) {
+  const rec = R.get('body_' + date), cur = live(rec) ? rec : null;
+  const last = weighIns().slice(-1)[0];
+  const dv = bodyDraftFor(date);
+  const val = (k) => (k in dv ? esc(dv[k]) : cur && cur[k] ? round2(cur[k]) : '');
+  return `<div class="body-entry">
+      <label>التاريخ<input class="field" type="date" id="body-date" data-f="body-date" value="${date}" max="${t}"></label>
+      <label>الوزن (كجم)<input class="field" data-body="kg" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="${val('kg')}" placeholder="${last ? round1(last.kg) : '0'}"></label>
+      <button class="btn primary" type="button" data-act="body-save">${cur ? 'حدّث' : 'سجّل'}</button>
+    </div>
+    <div class="measures" id="body-measures" ${UI.bodyMore ? '' : 'hidden'}>${MEASURES.map(([k, name, unit]) => `<label>${name} (${unit})<input class="field" data-body="${k}" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="${val(k)}"></label>`).join('')}</div>
+    <div><button class="link" type="button" data-act="body-more">${UI.bodyMore ? 'أخفِ المقاسات' : '+ مقاسات الجسم'}</button></div>`;
+}
+function bmiHTML(kgV, cm) {
+  const b = bmiInfo(kgV, cm);
+  const pos = Math.min(100, Math.max(0, ((b.v - 15) / 20) * 100)); // the bar runs from 15 to 35
+  return `<div class="bmi">
+    <div class="bmi-top"><span>مؤشر كتلة الجسم (BMI)</span><b><bdi dir="ltr">${b.v}</bdi> · ${b.cat}</b></div>
+    <div class="bmi-bar" role="img" aria-label="BMI ${b.v}، ${b.cat}"><i class="u"></i><i class="n"></i><i class="o"></i><i class="ob"></i><b style="left:${pos.toFixed(1)}%"></b></div>
+    <div class="bmi-x"><span style="left:17.5%">18.5</span><span style="left:50%">25</span><span style="left:75%">30</span></div>
+    <p class="fine">تقريبي، وما يفرّق بين العضل والدهون. لو جسمك عضلي، يطلع رقمك أعلى من الحقيقة.</p>
+  </div>`;
+}
+function bodyCard() {
+  const t = todayKey();
+  const date = UI.bodyDate && UI.bodyDate <= t ? UI.bodyDate : t;
+  const ws = weighIns(), pf = profile(), goal = pf.goalKg;
+  let h = `<div class="sec-title"><h2>وزن جسمك</h2>${ws.length ? `<span>${cnt(ws.length, 'entry')}</span>` : ''}</div>
+    <section class="card body-card">${bodyForm(date, t)}`;
+  if (!ws.length) {
+    h += '<p class="fine">وزّن نفسك مرة بالأسبوع على الأقل، الصبح قبل الأكل، عشان تكون الأرقام قابلة للمقارنة.</p>';
+  } else {
+    const last = ws[ws.length - 1];
+    const from = UI.bodyRange ? addDays(t, -UI.bodyRange) : '0000';
+    const start = (ws.find((r) => r.date >= from) || last).date;
+    const first = ws.find((r) => r.date === start);
+    const delta = round1(last.kg - first.kg);
+    const week = ws.filter((r) => r.date > addDays(t, -7));
+    const avg7 = week.length ? round1(week.reduce((a, r) => a + r.kg, 0) / week.length) : null;
+    const pts = ws.map((r) => ({ date: r.date, v: r.kg }));
+    const ma = movingAvg(pts, 7), slope = trend(pts, 28);
+    const left = goal ? round1(goal - last.kg) : 0;
+    const reached = goal && Math.abs(left) < 0.3;
+    const toward = goal && delta && Math.sign(delta) === Math.sign(goal - first.kg);
+    const kgs = ws.map((r) => r.kg);
+    h += `<div class="stats">
+      <div class="stat"><span>الحالي · ${last.date === t ? 'اليوم' : fmt(F.dm, last.date)}</span><b>${round1(last.kg)} <small>كجم</small></b></div>
+      <div class="stat"><span>التغيّر في الفترة</span><b class="${toward ? 'up' : ''}" dir="ltr">${sgn(delta)} <small>كجم</small></b></div>
+      <div class="stat"><span>معدل آخر 7 أيام</span><b>${avg7 == null ? '–' : `${avg7} <small>كجم</small>`}</b></div>
+      ${goal ? `<div class="stat"><span>باقي على هدفك (${round1(goal)})</span><b>${reached ? 'وصلت 🎉' : `${Math.abs(left)} <small>كجم ${left < 0 ? 'تنزّلها' : 'تزيدها'}</small>`}</b></div>`
+        : `<div class="stat"><span>أقل وأعلى</span><b dir="ltr">${round1(Math.min(...kgs))}–${round1(Math.max(...kgs))} <small>كجم</small></b></div>`}
+    </div>`;
+    let note = '';
+    if (reached) note = 'وصلت هدفك! حط هدف جديد من «الهدف والطول» تحت.';
+    else if (goal) {
+      if (slope == null) note = 'سجّل وزنك أكثر من مرة على أسبوعين، ونقدّر لك متى توصل هدفك.';
+      else if (Math.abs(slope * 7) < 0.1) note = 'وزنك ثابت تقريبًا آخر 4 أسابيع.';
+      else if (Math.sign(slope) !== Math.sign(left)) note = `وزنك ماشي عكس هدفك آخر 4 أسابيع (${kgPerWeek(slope)}).`;
+      else {
+        const days = Math.round(left / slope);
+        note = days > 730 ? `على سرعتك آخر 4 أسابيع (${kgPerWeek(slope)})، بتاخذ أكثر من سنتين توصل هدفك.`
+          : `على سرعتك آخر 4 أسابيع (${kgPerWeek(slope)})، توصل هدفك تقريبًا ${fmtDay(addDays(last.date, days))}.`;
+      }
+    } else if (slope != null) note = `سرعتك آخر 4 أسابيع: ${kgPerWeek(slope)}.`;
+    if (note) h += `<p class="fine">${note}</p>`;
+    if (pf.height) h += bmiHTML(last.kg, pf.height);
+    const cpts = ws.map((r, i) => ({ date: r.date, x: dateOf(r.date).getTime(), y: round1(r.kg), y2: ma[i] })).filter((p) => p.date >= start);
+    h += `<div class="seg" role="group" aria-label="الفترة">${RANGES.map(([r, l]) => `<button type="button" data-act="body-range" data-r="${r}" aria-pressed="${UI.bodyRange === r}">${l}</button>`).join('')}</div>
+      ${lineChart(cpts, 'وزن جسمك في كل تسجيل', goal)}
+      <div class="legend"><span><i></i>وزنك</span>${cpts.some((p) => p.y2 != null) ? '<span><i class="d"></i>معدل 7 أيام</span>' : ''}${goal ? '<span><i class="g"></i>الهدف</span>' : ''}</div>`;
+  }
+  h += UI.bodyProfile
+    ? `<div class="form profile-form">
+        <div class="two"><label>الوزن المستهدف (كجم)<input class="field" id="pf-goal" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="${goal ? round2(goal) : ''}" placeholder="مثلًا 75"></label>
+        <label>الطول (سم)<input class="field" id="pf-height" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="${pf.height || ''}" placeholder="مثلًا 175"></label></div>
+        <div class="btn-row"><button class="btn primary" type="button" data-act="profile-save">احفظ</button><button class="btn quiet" type="button" data-act="body-profile">إلغاء</button></div>
+      </div>`
+    : `<div><button class="link" type="button" data-act="body-profile">${goal || pf.height ? `الهدف: ${goal ? round1(goal) + ' كجم' : '–'} · الطول: ${pf.height ? pf.height + ' سم' : '–'} · عدّل` : 'حدّد هدفك وطولك'}</button></div>`;
+  return h + '</section>' + measuresCard() + bodyHistCard();
+}
+function measuresCard() {
+  const recs = bodyRecs();
+  const withM = MEASURES.filter(([k]) => recs.some((r) => r[k] > 0));
+  if (!withM.length) return '';
+  const key = withM.some((m) => m[0] === UI.bodyMeasure) ? UI.bodyMeasure : withM[0][0];
+  const [, name, unit] = MEASURES.find((m) => m[0] === key);
+  const ms = recs.filter((r) => r[key] > 0), last = ms[ms.length - 1];
+  return `<section class="card">
+    <div class="sec-title flush"><h2>مقاساتك</h2><span>${cnt(ms.length, 'entry')}</span></div>
+    <label class="form"><span class="sr">المقاس</span><select class="field" data-f="body-m" aria-label="اختر المقاس">${withM.map(([k, n]) => `<option value="${k}" ${k === key ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+    <div class="stats" style="margin-top:12px">
+      <div class="stat"><span>الحالي · ${fmt(F.dm, last.date)}</span><b>${round1(last[key])} <small>${unit}</small></b></div>
+      ${ms.length > 1 ? `<div class="stat"><span>من أول قياس، ${fmt(F.dm, ms[0].date)}</span><b dir="ltr">${sgn(last[key] - ms[0][key])} <small>${unit}</small></b></div>`
+        : '<div class="stat"><span>التغيّر</span><b>–</b><small class="muted">قِسه مرة ثانية وتشوفه</small></div>'}
+    </div>
+    ${lineChart(ms.map((r) => ({ x: dateOf(r.date).getTime(), y: round1(r[key]) })), `${name} في كل قياس`)}
+  </section>`;
+}
+function bodyHistCard() {
+  const recs = bodyRecs(), ws = weighIns();
+  if (!recs.length) return '';
+  const shown = (UI.bodyAll ? recs : recs.slice(-5)).reverse();
+  const row = (r) => {
+    const parts = [];
+    if (r.kg) {
+      const prev = ws.filter((o) => o.date < r.date).pop();
+      parts.push(`<bdi dir="ltr">${round1(r.kg)}</bdi> كجم${prev ? ` <bdi dir="ltr">(${sgn(r.kg - prev.kg)})</bdi>` : ''}`);
+    }
+    for (const [k, n, u] of MEASURES) if (r[k]) parts.push(`${n} <bdi dir="ltr">${round1(r[k])}${u === '%' ? '%' : ''}</bdi>`);
+    return `<li><button class="link" type="button" data-act="body-pick" data-d="${r.date}">${fmt(F.dm, r.date)}</button><span class="sets-txt">${parts.join(' · ')}</span><button class="link del" type="button" data-act="body-del" data-id="${r.id}">حذف</button></li>`;
+  };
+  return `<section class="card">
+    <div class="sec-title flush"><h2>تسجيلاتك</h2><span>${cnt(recs.length, 'entry')}</span></div>
+    <ul class="hist body-hist">${shown.map(row).join('')}</ul>
+    ${recs.length > 5 ? `<div><button class="link" type="button" data-act="body-all">${UI.bodyAll ? 'اعرض أقل' : 'اعرض الكل'}</button></div>` : ''}
+  </section>`;
+}
+// Under the lift's numbers: the best lift as a multiple of body weight, or a bodyweight move's total load.
+function strengthLine(all, bw) {
+  if (!weighIns().length) return `<p class="fine" style="margin-top:8px">سجّل وزن جسمك فوق، ويطلع لك هنا ${bw ? 'الحمل الكلي مع وزن جسمك' : 'كم مرة ترفع من وزن جسمك'}.</p>`;
+  if (bw) {
+    let best = null;
+    for (const x of all) {
+      const b = bodyKgOn(x.date).kg;
+      for (const s of x.sets) if (!best || b + s.w > best.tot || (b + s.w === best.tot && s.r > best.r)) best = { tot: b + s.w, b, w: s.w, r: s.r };
+    }
+    return `<p class="fine" style="margin-top:8px">أثقل جولة بالحمل الكلي: <bdi dir="ltr">${round1(best.tot)} × ${best.r}</bdi> (جسمك ${round1(best.b)} كجم${best.w ? ` + ${round2(best.w)} زايد` : '، بدون وزن زايد'}).</p>`;
+  }
+  let x = all[0];
+  for (const y of all) if (y.top.w >= x.top.w) x = y;
+  if (!x.top.w) return '';
+  const b = bodyKgOn(x.date).kg;
+  return `<p class="fine" style="margin-top:8px">أعلى وزن <bdi dir="ltr">${round2(x.top.w)}</bdi> كجم = <b><bdi dir="ltr">${round2(x.top.w / b)}×</bdi></b> وزن جسمك (كان ${round1(b)} كجم).</p>`;
+}
+
 function screenProgress() {
-  let h = attendanceCard();
+  let h = bodyCard() + attendanceCard();
   const withData = [];
   for (const e of [...BUILTIN, ...[...R.values()].filter((r) => r.type === 'exercise')]) {
     const hs = history(e.id);
@@ -1272,8 +1486,8 @@ function screenProgress() {
   }
   withData.sort((a, b) => (a.last < b.last ? 1 : -1));
   if (!withData.length) {
-    h += '<section class="card"><p class="empty">خلّص أول تمرين وبيطلع لك هنا رسم يوضح كيف أوزانك تزيد.</p></section>';
-    return { title: 'التقدّم', subtitle: 'أوزانك وأيام النادي', html: h, tabs: true };
+    h += '<div class="sec-title"><h2>تقدّم الأوزان</h2></div><section class="card"><p class="empty">خلّص أول تمرين وبيطلع لك هنا رسم يوضح كيف أوزانك تزيد.</p></section>';
+    return { title: 'التقدّم', subtitle: 'جسمك وأوزانك وأيام النادي', html: h, tabs: true };
   }
   const exId = withData.some((w) => w.e.id === UI.progEx) ? UI.progEx : withData[0].e.id;
   const all = history(exId);
@@ -1293,7 +1507,6 @@ function screenProgress() {
   const repWord = (n) => (Math.abs(n) % 100 >= 3 && Math.abs(n) % 100 <= 10 ? 'عدّات' : 'عدّة');
   const unitFor = (n) => (byReps ? repWord(n) : 'كجم');
   const pts = hs.map((x) => ({ x: dateOf(x.date).getTime(), y: byReps ? x.reps : x.top.w, y2: byReps || bw ? null : round1(x.e1), pr: x.pr }));
-  const ranges = [[30, 'شهر'], [90, '3 شهور'], [365, 'سنة'], [0, 'الكل']];
   h += `<div class="sec-title"><h2>تقدّم الأوزان</h2></div>
   <section class="card">
     <label class="form"><span class="sr">التمرين</span><select class="field" id="prog-ex" data-f="prog-ex" aria-label="اختر التمرين">${withData.map((w) => `<option value="${w.e.id}" ${w.e.id === exId ? 'selected' : ''}>${esc(w.e.name)}</option>`).join('')}</select></label>
@@ -1306,7 +1519,8 @@ function screenProgress() {
       <div class="stat"><span>آخر مرة</span><b dir="ltr" class="num">${byReps ? last.reps : setTxt(last.top, bw)}</b></div>
       <div class="stat"><span>التغيّر في الفترة</span><b class="${delta > 0 ? 'up' : ''}" dir="ltr">${delta > 0 ? '+' : ''}${delta} <small>${unitFor(delta)}</small></b></div>
     </div>
-    <div class="seg" role="group" aria-label="الفترة" style="margin-top:14px">${ranges.map(([r, l]) => `<button type="button" data-act="range" data-r="${r}" aria-pressed="${UI.progRange === r}">${l}</button>`).join('')}</div>
+    ${strengthLine(all, bw)}
+    <div class="seg" role="group" aria-label="الفترة" style="margin-top:14px">${RANGES.map(([r, l]) => `<button type="button" data-act="range" data-r="${r}" aria-pressed="${UI.progRange === r}">${l}</button>`).join('')}</div>
     ${lineChart(pts, `${exInfo(exId).name}: ${lineName} في كل تمرين`)}
     <div class="legend"><span><i></i>${lineName}</span>${byReps || bw ? '' : '<span><i class="d"></i>أقصى وزن تقديري لعدّة وحدة</span>'}<span><i class="p"></i>رقم جديد</span></div>
   </section>
@@ -1314,7 +1528,7 @@ function screenProgress() {
     <div class="sec-title flush"><h2>آخر الجلسات</h2><span>${cnt(all.length, 'sess')}</span></div>
     <ul class="hist">${all.slice(-10).reverse().map((x) => `<li><span>${fmt(F.dm, x.date)} ${x.pr ? '<span class="pr-chip">رقم جديد</span>' : ''}</span><span class="sets-txt">${setsHTML(x.sets, bw)}</span></li>`).join('')}</ul>
   </section>`;
-  return { title: 'التقدّم', subtitle: 'أوزانك وأيام النادي', html: h, tabs: true };
+  return { title: 'التقدّم', subtitle: 'جسمك وأوزانك وأيام النادي', html: h, tabs: true };
 }
 
 /* ---------- log ---------- */
@@ -1535,6 +1749,62 @@ const actions = {
 
   range: (b) => { UI.progRange = +b.dataset.r; render(); },
 
+  'body-save': () => {
+    const t = todayKey(), dEl = $('#body-date');
+    const date = dEl && /^\d{4}-\d{2}-\d{2}$/.test(dEl.value) && dEl.value <= t ? dEl.value : t;
+    const vals = {};
+    for (const el of main.querySelectorAll('[data-body]')) vals[el.dataset.body] = round2(toNum(el.value));
+    for (const [k, v] of Object.entries(vals)) {
+      const [lo, hi, name, unit] = bodyLimits(k);
+      if (v && (v < lo || v > hi)) { toast(`${name} لازم ${k === 'fat' ? 'تكون' : 'يكون'} بين ${lo} و${hi}${unit === '%' ? '%' : ' ' + unit}`); return; }
+    }
+    const old = R.get('body_' + date);
+    const rec = live(old) ? old : { id: 'body_' + date, type: 'body', date };
+    // Only the fields on screen change, so saving the weight alone keeps that day's measurements.
+    const next = Object.assign({}, rec, vals);
+    if (!BODY_KEYS.some((k) => next[k] > 0)) { toast(live(old) ? 'لمسح هذا اليوم، اضغط «حذف» في تسجيلاتك' : 'اكتب وزنك أول'); return; }
+    Object.assign(rec, vals, { deleted: false });
+    save(rec);
+    UI.bodyDraft = null;
+    toast(date === t ? (UI.screen === 'today' ? 'انحفظ وزنك. تشوف تقدّمه في «التقدّم»' : 'انحفظ') : `انحفظ ${fmt(F.dm, date)}`);
+    render();
+  },
+  // Shown and hidden in place (no render), so a weight typed but not saved yet stays in its field.
+  'body-more': (b) => {
+    UI.bodyMore = !UI.bodyMore;
+    $('#body-measures').hidden = !UI.bodyMore;
+    b.textContent = UI.bodyMore ? 'أخفِ المقاسات' : '+ مقاسات الجسم';
+  },
+  'body-range': (b) => { UI.bodyRange = +b.dataset.r; render(); },
+  'body-profile': () => { UI.bodyProfile = !UI.bodyProfile; render(); },
+  'body-all': () => { UI.bodyAll = !UI.bodyAll; render(); },
+  'body-pick': (b) => {
+    UI.bodyDate = b.dataset.d;
+    render();
+    $('#body-date').scrollIntoView({ block: 'center', behavior: 'smooth' });
+  },
+  'body-del': (b) => {
+    if (!armed(b, 'متأكد؟')) return;
+    const rec = R.get(b.dataset.id);
+    if (rec) { rec.deleted = true; save(rec); render(); }
+  },
+  'body-snooze': async () => { await setMeta('bodySnooze', addDays(todayKey(), 3)); render(); },
+  'profile-save': () => {
+    const goal = round2(toNum($('#pf-goal').value));
+    let height = toNum($('#pf-height').value);
+    if (height > 0 && height < 3) height *= 100; // typed in meters
+    height = Math.round(height);
+    if (goal && (goal < 20 || goal > 400)) { toast('الهدف لازم يكون بين 20 و400 كجم'); return; }
+    if (height && (height < 100 || height > 250)) { toast('الطول لازم يكون بين 100 و250 سم'); return; }
+    const old = R.get('profile');
+    const rec = live(old) ? old : { id: 'profile', type: 'profile' };
+    Object.assign(rec, { goalKg: goal, height, deleted: false });
+    save(rec);
+    UI.bodyProfile = false;
+    toast('انحفظ');
+    render();
+  },
+
   'setup-connect': async (b) => {
     b.disabled = true;
     const res = await connect($('#sync-link').value);
@@ -1652,8 +1922,21 @@ main.addEventListener('pointerdown', (e) => {
 });
 for (const t of ['pointerup', 'pointercancel']) window.addEventListener(t, holdEnd);
 main.addEventListener('pointerout', (e) => { if (e.target === hold.b) holdEnd(); });
+// «Done» on the keyboard saves the body form it's in.
+main.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || e.isComposing) return;
+  const el = e.target;
+  if (el.dataset && el.dataset.body) { e.preventDefault(); actions['body-save'](); }
+  else if (el.id === 'pf-goal' || el.id === 'pf-height') { e.preventDefault(); actions['profile-save'](); }
+});
 main.addEventListener('input', (e) => {
   const el = e.target, f = el.dataset.f;
+  if (el.dataset.body) {
+    const dEl = $('#body-date'), date = dEl ? dEl.value : todayKey();
+    if (!UI.bodyDraft || UI.bodyDraft.date !== date) UI.bodyDraft = { date, vals: {} };
+    UI.bodyDraft.vals[el.dataset.body] = el.value;
+    return;
+  }
   if (!f) return;
   const i = +el.dataset.i, j = +el.dataset.j;
   if (f === 'w' || f === 'r') {
@@ -1687,6 +1970,13 @@ main.addEventListener('change', (e) => {
     render();
   } else if (el.dataset.f === 'prog-ex') {
     UI.progEx = el.value;
+    render();
+  } else if (el.dataset.f === 'body-date') {
+    UI.bodyDate = el.value || null;
+    UI.bodyDraft = null; // the fields fill with the picked day's values
+    render();
+  } else if (el.dataset.f === 'body-m') {
+    UI.bodyMeasure = el.value;
     render();
   } else if (el.dataset.pref) {
     setPref(el.dataset.pref, el.checked);

@@ -435,6 +435,44 @@ textarea.field { height: auto; min-height: 88px; padding: 10px 12px; font-size: 
 .hist li:first-child { border-top: 0; }
 .hist .sets-txt { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; text-align: end; }
 
+/* ---------- body weight ---------- */
+.body-card { display: grid; gap: 12px; }
+.stat > small { display: block; font-size: 0.72rem; }
+.body-card .seg { justify-self: start; }
+.body-card .chart { margin-top: 0; }
+.body-card .legend { margin-top: -6px; }
+.body-entry { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+.body-entry label, .measures label, .profile-form label { display: grid; gap: 4px; font-size: 0.75rem; font-weight: 700; color: var(--muted); }
+.body-entry .btn, .weigh-row .btn { min-height: 44px; padding: 0 16px; }
+input[type="date"].field { display: block; font-size: 0.95rem; padding: 0 6px; -webkit-appearance: none; appearance: none; }
+input[type="date"].field::-webkit-date-and-time-value { text-align: center; }
+.measures { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.profile-form .two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.profile-form .field { text-align: center; }
+.weigh { display: grid; gap: 8px; }
+.weigh-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.bmi { display: grid; gap: 6px; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); }
+.bmi-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 0.85rem; }
+.bmi-top span { color: var(--muted); font-weight: 700; }
+/* Low to high, left to right like the charts: نحيف، طبيعي، زايد، سمنة from 15 to 35. */
+.bmi-bar { position: relative; display: grid; grid-template-columns: 17.5fr 32.5fr 25fr 25fr; height: 8px; margin-top: 4px; direction: ltr; }
+.bmi-bar i { opacity: 0.55; }
+.bmi-bar i + i { border-left: 2px solid var(--surface-2); }
+.bmi-bar .u { background: var(--accent); border-radius: 4px 0 0 4px; }
+.bmi-bar .n { background: var(--done); }
+.bmi-bar .o { background: var(--pr); }
+.bmi-bar .ob { background: var(--danger); border-radius: 0 4px 4px 0; }
+.bmi-bar b { position: absolute; top: -4px; width: 4px; height: 16px; margin-left: -2px; border-radius: 2px; background: var(--ink); box-shadow: 0 0 0 2px var(--surface-2); }
+.bmi-x { position: relative; height: 14px; direction: ltr; font-size: 0.7rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.bmi-x span { position: absolute; top: 0; transform: translateX(-50%); }
+.chart .goal { stroke: var(--done); stroke-width: 1.5; stroke-dasharray: 2 3; }
+.chart .goal-t { fill: var(--done); font-weight: 700; }
+.legend i.g { border-top: 1.5px dotted var(--done); }
+.body-hist li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 4px 0; }
+.body-hist .link { white-space: nowrap; font-size: 0.85rem; }
+.body-hist .link.del { color: var(--muted); }
+.body-hist .link.armed { color: var(--danger); }
+
 /* ---------- log ---------- */
 .sync-card { display: grid; gap: 12px; }
 .sync-state { display: flex; align-items: center; gap: 10px; font-weight: 700; }
