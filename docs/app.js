@@ -1404,10 +1404,10 @@ const actions = {
   start: (b) => startSession(b.dataset.rt),
   'open-session': (b) => { UI.sessionId = b.dataset.sid; push('session'); },
 
-  'w+': (b) => stepSet(b, 'w', prefs().step),
-  'w-': (b) => stepSet(b, 'w', -prefs().step),
-  'r+': (b) => stepSet(b, 'r', 1),
-  'r-': (b) => stepSet(b, 'r', -1),
+  'w+': (b) => tapStep(b),
+  'w-': (b) => tapStep(b),
+  'r+': (b) => tapStep(b),
+  'r-': (b) => tapStep(b),
   toggle: (b) => {
     const s = curSession(); if (!s) return;
     const it = s.items[+b.dataset.i], x = it && it.sets[+b.dataset.j];
@@ -1586,13 +1586,40 @@ const actions = {
   },
   'rest-skip': () => { UI.rest = null; tickRest(); },
 };
-function stepSet(b, f, d) {
-  const s = curSession(); if (!s) return;
-  const it = s.items[+b.dataset.i], x = it && it.sets[+b.dataset.j];
-  if (!x) return;
+// One step of a + or − button (data-act w+, w-, r+, r-). Returns the session it changed.
+function stepSet(b) {
+  const s = curSession(); if (!s) return null;
+  const i = +b.dataset.i, j = +b.dataset.j, f = b.dataset.act[0];
+  const x = s.items[i] && s.items[i].sets[j];
+  if (!x) return null;
+  const d = (b.dataset.act[1] === '+' ? 1 : -1) * (f === 'w' ? prefs().step : 1);
   x[f] = Math.max(0, round2((x[f] || 0) + d));
-  save(s);
-  render();
+  const el = main.querySelector(`input[data-f="${f}"][data-i="${i}"][data-j="${j}"]`);
+  if (el) el.value = f === 'w' ? w2s(x.w) : x.r || '';
+  if (f === 'w') updatePlates(s, i);
+  return s;
+}
+// Holding + or − keeps stepping, faster the longer it's held. The workout is saved once, on release.
+const STEP_ACTS = new Set(['w+', 'w-', 'r+', 'r-']);
+const hold = { b: null, timer: 0, n: 0, skipClickUntil: 0 };
+function tapStep(b) {
+  if (Date.now() < hold.skipClickUntil) return; // the click that ends a hold
+  const s = stepSet(b);
+  if (s) { save(s); render(); }
+}
+function holdTick() {
+  stepSet(hold.b);
+  hold.n++;
+  hold.timer = setTimeout(holdTick, hold.n < 5 ? 150 : hold.n < 15 ? 80 : 40);
+}
+function holdEnd() {
+  if (!hold.b) return;
+  clearTimeout(hold.timer);
+  hold.b = null;
+  if (!hold.n) return; // a short tap: its click does the step
+  hold.skipClickUntil = Date.now() + 400;
+  const s = curSession();
+  if (s) { save(s); render(); }
 }
 function moveItem(i, d) {
   const items = UI.draft.items, j = i + d;
@@ -1616,6 +1643,15 @@ main.addEventListener('click', (e) => {
   const fn = actions[b.dataset.act];
   if (fn) fn(b);
 });
+// A touch that turns into a scroll is cancelled before the hold starts, so scrolling never changes a number.
+main.addEventListener('pointerdown', (e) => {
+  const b = e.target.closest('[data-act]');
+  if (!b || e.button !== 0 || !STEP_ACTS.has(b.dataset.act)) return;
+  holdEnd();
+  Object.assign(hold, { b, n: 0, timer: setTimeout(holdTick, 400) });
+});
+for (const t of ['pointerup', 'pointercancel']) window.addEventListener(t, holdEnd);
+main.addEventListener('pointerout', (e) => { if (e.target === hold.b) holdEnd(); });
 main.addEventListener('input', (e) => {
   const el = e.target, f = el.dataset.f;
   if (!f) return;
@@ -1671,6 +1707,7 @@ window.addEventListener('online', () => Sync.run());
 window.addEventListener('offline', renderSyncState);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
+    holdEnd();
     flushPending();
     // Mid-workout the phone gets locked between every set; the 10-minute upload covers that.
     if (outbox.size && !activeToday()) Sync.run({ keepalive: true });
