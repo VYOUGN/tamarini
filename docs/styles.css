@@ -442,11 +442,16 @@ textarea.field { height: auto; min-height: 88px; padding: 10px 12px; font-size: 
 .body-card .chart { margin-top: 0; }
 .body-card .legend { margin-top: -6px; }
 .body-entry { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; gap: 8px; align-items: end; }
-.body-entry label, .measures label, .profile-form label { display: grid; gap: 4px; font-size: 0.75rem; font-weight: 700; color: var(--muted); }
+.body-entry label, .profile-form label { display: grid; gap: 4px; font-size: 0.75rem; font-weight: 700; color: var(--muted); }
 .body-entry .btn, .weigh-row .btn { min-height: 44px; padding: 0 16px; }
 input[type="date"].field { display: block; font-size: 0.95rem; padding: 0 6px; -webkit-appearance: none; appearance: none; }
 input[type="date"].field::-webkit-date-and-time-value { text-align: center; }
-.measures { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+/* A table: the measure's name, then one wide field or a right and a left one under «يمين» and «يسار». */
+.measures { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr); gap: 8px 10px; align-items: center; }
+.measures .m-name { font-size: 0.85rem; font-weight: 700; white-space: nowrap; }
+.measures .m-side { margin: 4px 0 -4px; text-align: center; font-size: 0.75rem; font-weight: 700; color: var(--muted); }
+.measures .field { text-align: center; }
+.measures .field.wide { grid-column: span 2; }
 .profile-form .two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .profile-form .field { text-align: center; }
 .weigh { display: grid; gap: 8px; }
@@ -468,6 +473,10 @@ input[type="date"].field::-webkit-date-and-time-value { text-align: center; }
 .chart .goal { stroke: var(--done); stroke-width: 1.5; stroke-dasharray: 2 3; }
 .chart .goal-t { fill: var(--done); font-weight: 700; }
 .legend i.g { border-top: 1.5px dotted var(--done); }
+/* The left side beside the right: its own color and a dash, so the two lines tell apart without color too. */
+.chart .l1.b { stroke: var(--pr); stroke-dasharray: 6 3; }
+.chart .pt.b { stroke: var(--pr); }
+.legend i.b { border-top: 2.25px dashed var(--pr); }
 .body-hist li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 4px 0; }
 .body-hist .link { white-space: nowrap; font-size: 0.85rem; }
 .body-hist .link.del { color: var(--muted); }

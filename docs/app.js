@@ -268,10 +268,26 @@ const activeToday = () => sessionsDesc().find((s) => !s.finishedAt && (s.date ==
 const hasUserData = () => [...R.values()].some((r) => r.type === 'routine' || r.type === 'session' || r.type === 'schedule' || r.type === 'body');
 
 /* ============================== body ============================== */
-// One record per day: { id: 'body_<date>', type: 'body', date, kg, waist, chest, arm, thigh, fat }. 0 means not measured that day.
-const MEASURES = [['waist', 'الخصر', 'سم'], ['chest', 'الصدر', 'سم'], ['arm', 'الذراع', 'سم'], ['thigh', 'الفخذ', 'سم'], ['fat', 'نسبة الدهون', '%']];
-const BODY_KEYS = ['kg', ...MEASURES.map((m) => m[0])];
-const bodyLimits = (k) => (k === 'kg' ? [20, 400, 'الوزن', 'كجم'] : k === 'fat' ? [2, 70, 'نسبة الدهون', '%'] : [10, 300, MEASURES.find((m) => m[0] === k)[1], 'سم']);
+// One record per day: { id: 'body_<date>', type: 'body', date, kg, neck, chest, waist, fat, bicepR, bicepL, ... }. 0 means not measured that day.
+// A measure's fields are [field, side]: one field, or a right and a left one (bicepR, bicepL).
+const SIDES = [['R', 'يمين'], ['L', 'يسار']];
+const measure = (key, name, unit, sided) => ({ key, name, unit, fields: sided ? SIDES.map(([s, side]) => [key + s, side]) : [[key, '']] });
+const MEASURES = [
+  measure('neck', 'الرقبة', 'سم'), measure('chest', 'الصدر', 'سم'), measure('waist', 'الخصر', 'سم'), measure('fat', 'نسبة الدهون', '%'),
+  measure('bicep', 'العضد', 'سم', 1), measure('forearm', 'الساعد', 'سم', 1), measure('thigh', 'الفخذ', 'سم', 1), measure('calf', 'بطن الساق', 'سم', 1),
+];
+// Before right and left were split, the arm and the thigh were one number each. Still shown, no longer asked for.
+const OLD_MEASURES = [
+  { key: 'oldArm', name: 'الذراع (قديم)', unit: 'سم', fields: [['arm', '']] },
+  { key: 'oldThigh', name: 'الفخذ (قديم)', unit: 'سم', fields: [['thigh', '']] },
+];
+const ALL_MEASURES = [...MEASURES, ...OLD_MEASURES];
+const BODY_KEYS = ['kg', ...ALL_MEASURES.flatMap((m) => m.fields.map(([f]) => f))];
+function bodyLimits(k) {
+  if (k === 'kg') return [20, 400, 'الوزن', 'كجم'];
+  const m = ALL_MEASURES.find((x) => x.fields.some(([f]) => f === k)), side = m.fields.find(([f]) => f === k)[1];
+  return [...(m.unit === '%' ? [2, 70] : [10, 300]), side ? `${m.name} ${side}` : m.name, m.unit];
+}
 const bodyRecs = () => [...R.values()].filter((r) => r.type === 'body' && live(r) && BODY_KEYS.some((k) => r[k] > 0)).sort((a, b) => (a.date < b.date ? -1 : 1));
 const weighIns = () => bodyRecs().filter((r) => r.kg > 0);
 // The weigh-in that applies on a date: the last one on or before it, else the first one after.
@@ -1282,11 +1298,12 @@ function niceRange(min, max) {
   return { lo, hi, step };
 }
 // `goal` (optional) draws a flat dotted line at that value and keeps it in view.
-function lineChart(pts, label, goal = 0) {
+// y is the main line; y2 is a dashed average, or with `pair` a second line of its own (left beside right).
+function lineChart(pts, label, goal = 0, pair = false) {
   const W = 340, H = 200, L = 40, RR = 16, T = 18, B = 26;
   const iw = W - L - RR, ih = H - T - B;
   const xs = pts.map((p) => p.x), x0 = Math.min(...xs), x1 = Math.max(...xs);
-  const yv = pts.flatMap((p) => (p.y2 != null ? [p.y, p.y2] : [p.y])).concat(goal ? [goal] : []);
+  const yv = pts.flatMap((p) => [p.y, p.y2]).filter((v) => v != null).concat(goal ? [goal] : []);
   const { lo, hi, step } = niceRange(Math.min(...yv), Math.max(...yv));
   const sx = (x) => (x1 === x0 ? L + iw / 2 : L + ((x - x0) / (x1 - x0)) * iw);
   const sy = (y) => T + (1 - (y - lo) / (hi - lo)) * ih;
@@ -1301,15 +1318,16 @@ function lineChart(pts, label, goal = 0) {
   }
   const line = (k) => pts.filter((p) => p[k] != null).map((p, i) => `${i ? 'L' : 'M'}${sx(p.x).toFixed(1)},${sy(p[k]).toFixed(1)}`).join('');
   const base = (T + ih).toFixed(1);
-  const area = pts.length > 1 ? `${line('y')}L${sx(x1).toFixed(1)},${base}L${sx(x0).toFixed(1)},${base}Z` : '';
-  const dots = pts.map((p) => `<circle class="pt ${p.pr ? 'pr' : ''}" cx="${sx(p.x).toFixed(1)}" cy="${sy(p.y).toFixed(1)}" r="${p.pr ? 4.5 : 3.2}"/>`).join('');
-  const lastP = pts[pts.length - 1];
+  const ys = pts.filter((p) => p.y != null), lastP = ys[ys.length - 1];
+  const area = ys.length > 1 ? `${line('y')}L${sx(lastP.x).toFixed(1)},${base}L${sx(ys[0].x).toFixed(1)},${base}Z` : '';
+  const dot = (p, k, c) => `<circle class="pt ${c}" cx="${sx(p.x).toFixed(1)}" cy="${sy(p[k]).toFixed(1)}" r="${c === 'pr' ? 4.5 : 3.2}"/>`;
+  const dots = ys.map((p) => dot(p, 'y', p.pr ? 'pr' : '')).join('') + (pair ? pts.filter((p) => p.y2 != null).map((p) => dot(p, 'y2', 'b')).join('') : '');
   const endY = Math.max(T - 4, sy(lastP.y) - 9);
   const endX = Math.min(W - RR, Math.max(L + 10, sx(lastP.x)));
   let xl = `<text x="${sx(x0).toFixed(1)}" y="${H - 6}" text-anchor="${x1 === x0 ? 'middle' : 'start'}">${fmt(F.dm, x0)}</text>`;
   if (x1 !== x0) xl += `<text x="${sx(x1).toFixed(1)}" y="${H - 6}" text-anchor="end">${fmt(F.dm, x1)}</text>`;
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(label)}">
-    ${g}${area ? `<path class="area" d="${area}"/>` : ''}<path class="l2" d="${line('y2')}"/><path class="l1" d="${line('y')}"/>${dots}
+    ${g}${area ? `<path class="area" d="${area}"/>` : ''}<path class="${pair ? 'l1 b' : 'l2'}" d="${line('y2')}"/><path class="l1" d="${line('y')}"/>${dots}
     <text class="end" x="${endX.toFixed(1)}" y="${endY.toFixed(1)}" text-anchor="end">${round2(lastP.y)}</text>${xl}
   </svg>`;
 }
@@ -1352,7 +1370,10 @@ function bodyForm(date, t) {
       <label>الوزن (كجم)<input class="field" data-body="kg" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="${val('kg')}" placeholder="${last ? round1(last.kg) : '0'}"></label>
       <button class="btn primary" type="button" data-act="body-save">${cur ? 'حدّث' : 'سجّل'}</button>
     </div>
-    <div class="measures" id="body-measures" ${UI.bodyMore ? '' : 'hidden'}>${MEASURES.map(([k, name, unit]) => `<label>${name} (${unit})<input class="field" data-body="${k}" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="${val(k)}"></label>`).join('')}</div>
+    <div class="measures" id="body-measures" ${UI.bodyMore ? '' : 'hidden'}>${MEASURES.map((m) => {
+      const head = m.fields.length > 1 && m === MEASURES.find((x) => x.fields.length > 1) ? `<span></span>${SIDES.map(([, side]) => `<span class="m-side">${side}</span>`).join('')}` : '';
+      return `${head}<span class="m-name">${m.name}</span>${m.fields.map(([f, side]) => `<input class="field ${side ? '' : 'wide'}" data-body="${f}" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="${val(f)}" placeholder="${m.unit}" aria-label="${m.name}${side ? ' ' + side : ''} (${m.unit === '%' ? '%' : 'بالسنتيمتر'})">`).join('')}`;
+    }).join('')}</div>
     <div><button class="link" type="button" data-act="body-more">${UI.bodyMore ? 'أخفِ المقاسات' : '+ مقاسات الجسم'}</button></div>`;
 }
 function bmiHTML(kgV, cm) {
@@ -1422,22 +1443,28 @@ function bodyCard() {
     : `<div><button class="link" type="button" data-act="body-profile">${goal || pf.height ? `الهدف: ${goal ? round1(goal) + ' كجم' : '–'} · الطول: ${pf.height ? pf.height + ' سم' : '–'} · عدّل` : 'حدّد هدفك وطولك'}</button></div>`;
   return h + '</section>' + measuresCard() + bodyHistCard();
 }
+// One measure at a time; a two-sided one shows right and left side by side, and as two lines.
 function measuresCard() {
   const recs = bodyRecs();
-  const withM = MEASURES.filter(([k]) => recs.some((r) => r[k] > 0));
+  const withM = ALL_MEASURES.filter((m) => m.fields.some(([f]) => recs.some((r) => r[f] > 0)));
   if (!withM.length) return '';
-  const key = withM.some((m) => m[0] === UI.bodyMeasure) ? UI.bodyMeasure : withM[0][0];
-  const [, name, unit] = MEASURES.find((m) => m[0] === key);
-  const ms = recs.filter((r) => r[key] > 0), last = ms[ms.length - 1];
+  const m = withM.find((x) => x.key === UI.bodyMeasure) || withM[0];
+  const sides = m.fields.filter(([f]) => recs.some((r) => r[f] > 0));
+  const ms = recs.filter((r) => sides.some(([f]) => r[f] > 0));
+  const stats = sides.map(([f, side]) => {
+    const xs = ms.filter((r) => r[f] > 0), first = xs[0], last = xs[xs.length - 1];
+    return [`<div class="stat"><span>${side || 'الحالي'} · ${fmt(F.dm, last.date)}</span><b>${round1(last[f])} <small>${m.unit}</small></b></div>`,
+      xs.length > 1 ? `<div class="stat"><span>${side ? `${side} من أول قياس` : `من أول قياس، ${fmt(F.dm, first.date)}`}</span><b dir="ltr">${sgn(last[f] - first[f])} <small>${m.unit}</small></b></div>`
+        : `<div class="stat"><span>${side ? `${side}: التغيّر` : 'التغيّر'}</span><b>–</b><small class="muted">قِسه مرة ثانية وتشوفه</small></div>`];
+  });
+  const [a, b] = sides.map(([f]) => f);
+  const pts = ms.map((r) => ({ x: dateOf(r.date).getTime(), y: r[a] > 0 ? round1(r[a]) : null, y2: b && r[b] > 0 ? round1(r[b]) : null }));
   return `<section class="card">
     <div class="sec-title flush"><h2>مقاساتك</h2><span>${cnt(ms.length, 'entry')}</span></div>
-    <label class="form"><span class="sr">المقاس</span><select class="field" data-f="body-m" aria-label="اختر المقاس">${withM.map(([k, n]) => `<option value="${k}" ${k === key ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
-    <div class="stats" style="margin-top:12px">
-      <div class="stat"><span>الحالي · ${fmt(F.dm, last.date)}</span><b>${round1(last[key])} <small>${unit}</small></b></div>
-      ${ms.length > 1 ? `<div class="stat"><span>من أول قياس، ${fmt(F.dm, ms[0].date)}</span><b dir="ltr">${sgn(last[key] - ms[0][key])} <small>${unit}</small></b></div>`
-        : '<div class="stat"><span>التغيّر</span><b>–</b><small class="muted">قِسه مرة ثانية وتشوفه</small></div>'}
-    </div>
-    ${lineChart(ms.map((r) => ({ x: dateOf(r.date).getTime(), y: round1(r[key]) })), `${name} في كل قياس`)}
+    <label class="form"><span class="sr">المقاس</span><select class="field" data-f="body-m" aria-label="اختر المقاس">${withM.map((x) => `<option value="${x.key}" ${x === m ? 'selected' : ''}>${x.name}</option>`).join('')}</select></label>
+    <div class="stats" style="margin-top:12px">${stats.map((s) => s[0]).join('')}${stats.map((s) => s[1]).join('')}</div>
+    ${lineChart(pts, `${m.name}${b ? ' يمين ويسار' : ''} في كل قياس`, 0, !!b)}
+    ${b ? `<div class="legend"><span><i></i>يمين</span><span><i class="b"></i>يسار</span></div>` : ''}
   </section>`;
 }
 function bodyHistCard() {
@@ -1450,7 +1477,10 @@ function bodyHistCard() {
       const prev = ws.filter((o) => o.date < r.date).pop();
       parts.push(`<bdi dir="ltr">${round1(r.kg)}</bdi> كجم${prev ? ` <bdi dir="ltr">(${sgn(r.kg - prev.kg)})</bdi>` : ''}`);
     }
-    for (const [k, n, u] of MEASURES) if (r[k]) parts.push(`${n} <bdi dir="ltr">${round1(r[k])}${u === '%' ? '%' : ''}</bdi>`);
+    for (const m of ALL_MEASURES) {
+      const vs = m.fields.filter(([f]) => r[f] > 0).map(([f, side]) => `${side ? side + ' ' : ''}<bdi dir="ltr">${round1(r[f])}${m.unit === '%' ? '%' : ''}</bdi>`);
+      if (vs.length) parts.push(`${m.name} ${vs.join(' و')}`);
+    }
     return `<li><button class="link" type="button" data-act="body-pick" data-d="${r.date}">${fmt(F.dm, r.date)}</button><span class="sets-txt">${parts.join(' · ')}</span><button class="link del" type="button" data-act="body-del" data-id="${r.id}">حذف</button></li>`;
   };
   return `<section class="card">
