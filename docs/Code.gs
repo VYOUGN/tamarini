@@ -21,7 +21,18 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu('تماريني')
     .addItem('رابط المزامنة', 'menuShowLink')
     .addItem('رابط جديد (يوقف القديم)', 'menuNewLink')
+    .addSeparator()
+    .addItem('غيّر رابط Web app', 'menuChangeUrl')
     .addToUi();
+}
+
+function menuChangeUrl() {
+  var ui = SpreadsheetApp.getUi();
+  var url = askUrl_(ui, false);
+  if (!url) return;
+  sheet_();
+  showLink_('رابط المزامنة', url + '#' + state_().key,
+    'انحفظ رابط Web app الجديد. هذا رابط المزامنة الصحيح: الصقه في التطبيق من تبويب «السجل» ثم «غيّر الرابط».');
 }
 
 function menuShowLink() {
@@ -60,32 +71,69 @@ function state_() {
   if (props.getProperty('SHEET_ID') !== id || !props.getProperty('KEY')) {
     props.setProperty('SHEET_ID', id);
     props.setProperty('KEY', newKey_());
+    props.setProperty('INSTANCE', newKey_().slice(0, 16));
     props.deleteProperty('EXEC_URL');
+  } else if (!props.getProperty('INSTANCE')) {
+    props.setProperty('INSTANCE', newKey_().slice(0, 16));
   }
-  return { key: props.getProperty('KEY') };
+  return { key: props.getProperty('KEY'), instance: props.getProperty('INSTANCE') };
 }
 
 function newKey_() {
   return Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '').slice(0, 8);
 }
 
-// getUrl() sometimes returns the /dev link, which only works for the owner; the app needs /exec.
+// The saved Web app link, checked every time: a link that doesn't answer gets replaced before it's shown.
 function execUrl_(ui) {
   state_();
+  var url = PropertiesService.getScriptProperties().getProperty('EXEC_URL');
+  if (url) {
+    var problem = checkUrl_(url);
+    if (!problem) return url;
+    ui.alert('رابط Web app المحفوظ ما يشتغل', problem + '\n\nالصق الرابط الصحيح في الخطوة الجاية.', ui.ButtonSet.OK);
+    return askUrl_(ui, false);
+  }
+  return askUrl_(ui, true);
+}
+
+// getUrl() sometimes returns the /dev link, which only works for the owner; the app needs /exec.
+function askUrl_(ui, tryGuess) {
   var props = PropertiesService.getScriptProperties();
-  var url = props.getProperty('EXEC_URL');
-  if (url) return url;
-  var guess = ScriptApp.getService().getUrl() || '';
-  if (/\/exec$/.test(guess)) { props.setProperty('EXEC_URL', guess); return guess; }
+  var guess = tryGuess ? ScriptApp.getService().getUrl() || '' : '';
+  if (/\/exec$/.test(guess) && !checkUrl_(guess)) { props.setProperty('EXEC_URL', guess); return guess; }
   var r = ui.prompt('رابط Web app', 'الصق رابط Web app اللي نسخته من نافذة النشر (Deploy). لازم ينتهي بـ /exec', ui.ButtonSet.OK_CANCEL);
   if (r.getSelectedButton() !== ui.Button.OK) return null;
-  url = r.getResponseText().trim();
-  if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(url)) {
-    ui.alert('هذا مو رابط Web app. لازم يبدأ بـ https://script.google.com وينتهي بـ /exec. إذا ما نشرت السكربت للحين: Deploy ثم New deployment ثم Web app.');
-    return null;
-  }
+  // Someone may paste the whole sync link; only the part before # is the Web app link.
+  var url = r.getResponseText().split('#')[0].replace(/\s+/g, '');
+  var problem = checkUrl_(url);
+  if (problem) { ui.alert('الرابط فيه مشكلة', problem, ui.ButtonSet.OK); return null; }
   props.setProperty('EXEC_URL', url);
   return url;
+}
+
+// Opens the link the way the app will, and checks it reaches this very script. Returns '' when it does.
+function checkUrl_(url) {
+  if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(url)) {
+    return 'هذا مو رابط Web app. لازم يبدأ بـ https://script.google.com وينتهي بـ /exec. إذا ما نشرت السكربت للحين: Deploy ثم New deployment ثم Web app.';
+  }
+  var res;
+  try {
+    res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true });
+  } catch (err) {
+    return 'ما قدرنا نفتح الرابط. جرّب مرة ثانية بعد شوي.';
+  }
+  if (res.getResponseCode() === 404) {
+    return 'الرابط ما يفتح (Page not found). غالبًا انقص وقت النسخ، فانسخه كامل من نافذة النشر.';
+  }
+  var data = null;
+  try { data = JSON.parse(res.getContentText()); } catch (err) {}
+  if (!data || data.app !== 'tamarini') {
+    return 'الرابط يفتح صفحة ثانية مو سكربت تماريني. تأكد إن «Who has access» مضبوط على Anyone، وإن الرابط من نافذة النشر حق هذا الجدول.';
+  }
+  if (data.instance !== state_().instance) {
+    return 'هذا الرابط لنسخة قديمة من الكود أو لجدول ثاني. إذا عدّلت الكود، انشره من جديد: Deploy ثم Manage deployments، واضغط القلم واختر New version.';
+  }
+  return '';
 }
 
 function showLink_(title, link, note) {
@@ -104,8 +152,9 @@ function esc_(s) {
 
 /* ============================== sync endpoint ============================== */
 
+// `instance` is a public tag for this script, so the menu can tell its own link from anyone else's.
 function doGet() {
-  return json_({ ok: true, app: 'tamarini', note: 'هذا رابط مزامنة تماريني. التطبيق يستخدمه، ما يحتاج تفتحه.' });
+  return json_({ ok: true, app: 'tamarini', instance: state_().instance, note: 'هذا رابط مزامنة تماريني. التطبيق يستخدمه، ما يحتاج تفتحه.' });
 }
 
 function doPost(e) {

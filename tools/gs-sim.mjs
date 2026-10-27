@@ -36,7 +36,8 @@ function makeSheet(name) {
 }
 
 // Pass the same `props` with a different `sheetId` to simulate someone copying a spreadsheet.
-export function loadCodeGs({ devUrl = 'https://script.google.com/macros/s/SIM/dev', sheetId = 'sheet-1', props = new Map() } = {}) {
+// `web` maps URLs to what UrlFetchApp gets back; share one between sims to model several scripts.
+export function loadCodeGs({ devUrl = 'https://script.google.com/macros/s/SIM/dev', sheetId = 'sheet-1', props = new Map(), web = new Map() } = {}) {
   const sheets = new Map([['Sheet1', makeSheet('Sheet1')]]);
   const prompts = []; // queued answers: string = OK with that text, null = Cancel
   const log = { alerts: [], dialogs: [], menu: [] };
@@ -61,6 +62,13 @@ export function loadCodeGs({ devUrl = 'https://script.google.com/macros/s/SIM/de
     PropertiesService: { getScriptProperties: () => ({ getProperty: (k) => (props.has(k) ? props.get(k) : null), setProperty: (k, v) => { props.set(k, String(v)); }, deleteProperty: (k) => { props.delete(k); } }) },
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
     Utilities: { getUuid: () => randomUUID() },
+    UrlFetchApp: {
+      fetch(url) {
+        const hit = web.get(url);
+        const r = hit ? hit() : { code: 404, text: '<!DOCTYPE html><title>Page not found</title>' };
+        return { getResponseCode: () => r.code, getContentText: () => r.text };
+      },
+    },
     ScriptApp: { getService: () => ({ getUrl: () => devUrl }) },
     ContentService: { MimeType: { JSON: 'JSON' }, createTextOutput: (s) => ({ setMimeType() { return this; }, getContent: () => s }) },
     HtmlService: { createHtmlOutput: (h) => ({ setWidth() { return this; }, setHeight() { return this; }, getContent: () => h }) },
@@ -81,5 +89,7 @@ export function loadCodeGs({ devUrl = 'https://script.google.com/macros/s/SIM/de
     const m = d && d.html.match(/>(https:[^<]+)<\/textarea>/g);
     return m ? m.map((x) => x.slice(1, -'</textarea>'.length).replace(/&amp;/g, '&')) : [];
   };
-  return { gs: ctx, props, sheets, prompts, log, call, lastLink };
+  // Publish this script's doGet at `url`, like a Web app deployment.
+  const serveAt = (url) => { web.set(url, () => ({ code: 200, text: ctx.doGet().getContent() })); return url; };
+  return { gs: ctx, props, sheets, prompts, log, call, lastLink, web, serveAt };
 }
