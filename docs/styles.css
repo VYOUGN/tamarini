@@ -235,6 +235,7 @@ a.btn, a.back { text-decoration: none; }
 .wk-count small { color: var(--muted); font-weight: 600; }
 .bar { height: 6px; border-radius: 3px; background: var(--surface-2); margin-top: 8px; overflow: hidden; }
 .bar i { display: block; height: 100%; background: var(--done); border-radius: 3px; transition: width 0.25s; }
+.coach { margin: 8px 0 0; font-size: 0.95rem; font-weight: 700; line-height: 1.5; color: var(--accent); }
 
 .ex-card { display: grid; gap: 10px; }
 .ex-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }

@@ -317,6 +317,92 @@ function platesHTML(total) {
   return h;
 }
 
+/* ============================== motivation ============================== */
+// One line under the workout's progress bar. It changes only when a set is ticked, and says
+// something that fits the moment: a new record, the last set, an exercise done, halfway.
+const COACH = {
+  start: [
+    'يلا بسم الله، أول جولة تفتح الباقي',
+    'اليوم يوم شغل، وجسمك جاهز',
+    'إحماء زين، وبعدها نكسر الحديد',
+    'ركّز على الحركة الصح، والوزن يجي بعدين',
+    'أصعب شي إنك تجي النادي، وأنت جيت. يلا!',
+  ],
+  set: [
+    'كفو! كمّل على نفس الرتم',
+    'جولة ورا جولة، كذا تنبني العضلة',
+    'قوي! خذ نفسك وارجع',
+    'عاش! الحديد ما يكذب',
+    'كل جولة تقرّبك من هدفك',
+    'شد حيلك، أنت قدها',
+    'تعب اليوم قوة بكرة',
+    'استمر، السر كله في الاستمرار',
+    'ولا أروع، خلّ الراحة قصيرة',
+    'زين! اشرب موية وكمّل',
+    'جسمك يتعب، بس عقلك اللي يقرر',
+    'ما أحد بيرفعها عنك، يلا الجولة الجاية',
+    'الثبات أهم من الوزن، وأنت ثابت',
+    'تمام التمام، كمّل',
+  ],
+  half: [
+    'خلّصت النص! النص الثاني أسهل',
+    'نص التمرين راح، باقي القليل',
+    'وصلت النص، لا توقف الحين',
+  ],
+  last: [
+    'آخر جولة! طلّع كل اللي فيك',
+    'باقي جولة وحدة، خلّها أحسن وحدة',
+    'آخر وحدة، وبعدها ترتاح وضميرك مرتاح',
+  ],
+  exDone: [
+    'خلّصت {ex}! يلا على اللي بعده',
+    '{ex} خلص ✓ كمّل على نفس القوة',
+    'شطبت {ex}، أحسنت',
+  ],
+  pr: [
+    'رقم جديد في {ex}! {w} كجم 🔥',
+    '{w} كجم في {ex}! أثقل من أي مرة قبل 💪',
+    'كسرت رقمك في {ex}: {w} كجم!',
+  ],
+  allDone: [
+    'خلّصت كل الجولات! اضغط «إنهاء التمرين» تحت',
+    'كل الجولات خلصت 💪 اضغط «إنهاء التمرين» وارتاح',
+  ],
+};
+const coachOn = () => !(meta.prefs && meta.prefs.coach === false);
+const recentLines = [];
+function pickLine(kind, vars = {}) {
+  const pool = COACH[kind];
+  const fresh = pool.filter((t) => !recentLines.includes(t));
+  const t = (fresh.length ? fresh : pool)[Math.floor(Math.random() * (fresh.length || pool.length))];
+  recentLines.push(t);
+  if (recentLines.length > 6) recentLines.shift();
+  return t.replace(/\{ex\}/g, vars.ex || '').replace(/\{w\}/g, vars.w == null ? '' : String(round2(vars.w)));
+}
+// The heaviest finished set for this exercise in any other workout.
+function bestBefore(exId, sid) {
+  let best = 0;
+  for (const s of sessions()) {
+    if (s.id === sid) continue;
+    for (const it of s.items) if (it.ex === exId) for (const x of it.sets) if (x.done && x.r > 0 && x.w > best) best = x.w;
+  }
+  return best;
+}
+// Called right after set j of exercise i was ticked. Returns { text, pr }.
+function lineAfterSet(s, i, j) {
+  const it = s.items[i], x = it.sets[j];
+  const name = exInfo(it.ex).name;
+  const total = totalSets(s), dn = doneSets(s);
+  const prev = bestBefore(it.ex, s.id);
+  const heavierThanToday = it.sets.every((o, k) => k === j || !o.done || o.w < x.w);
+  if (prev > 0 && x.w > prev && x.r > 0 && heavierThanToday) return { text: pickLine('pr', { ex: name, w: x.w }), pr: true };
+  if (dn === total) return { text: pickLine('allDone') };
+  if (it.sets.every((o) => o.done)) return { text: pickLine('exDone', { ex: name }) };
+  if (total - dn === 1) return { text: pickLine('last') };
+  if (dn - 1 < total / 2 && dn >= total / 2) return { text: pickLine('half') };
+  return { text: pickLine('set') };
+}
+
 /* ============================== sync (Google Sheets via Apps Script) ============================== */
 // Every change is safe in IndexedDB the moment it's made; the upload is the off-phone copy.
 // To keep mobile data low, a workout in progress uploads at most every 10 minutes and once more
@@ -533,7 +619,7 @@ async function importBackup(file) {
 const UI = {
   tab: 'today', screen: 'today', stack: [],
   sessionId: null, draft: null, pickFor: null, pickQuery: '', newExFor: null,
-  progEx: null, progRange: 90, linkEdit: false, dirtyRender: false,
+  progEx: null, progRange: 90, linkEdit: false, dirtyRender: false, coach: null,
 };
 const isField = (el) => !!el && main.contains(el) && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
 
@@ -733,11 +819,17 @@ function summaryCard(s) {
     ${prs.length ? `<ul class="plan-list pr-list">${prs.map((p) => `<li><span><span class="pr-chip">رقم جديد</span> ${esc(exInfo(p.ex).name)}</span><span class="num">${round2(p.w)} كجم، كان ${round2(p.prev)}</span></li>`).join('')}</ul>` : ''}
   </section>`;
 }
+function coachLine(s, dn) {
+  if (!coachOn() || s.finishedAt || !s.items.length) return '';
+  if (!UI.coach || UI.coach.sid !== s.id) UI.coach = { sid: s.id, text: pickLine(dn ? 'set' : 'start') };
+  return `<p class="coach" role="status">${esc(UI.coach.text)}</p>`;
+}
 function screenSession(s, inline) {
   const total = totalSets(s), dn = doneSets(s);
   let h = `<div class="wk-top">
     <div class="wk-top-row"><h2>${esc(s.name)}</h2><span class="wk-count num">${dn} <small>من ${cnt(total, 'set')}</small></span></div>
     <div class="bar"><i style="width:${total ? Math.round((dn / total) * 100) : 0}%"></i></div>
+    ${coachLine(s, dn)}
   </div>`;
   if (!s.items.length) h += '<p class="empty">ما فيه تمارين للحين. أضف أول تمرين.</p>';
   s.items.forEach((it, i) => { h += exCard(s, it, i); });
@@ -1024,6 +1116,10 @@ function syncCard() {
 }
 function screenLog() {
   let h = syncCard();
+  h += `<section class="card">
+    <div class="sec-title flush"><h2>الإعدادات</h2></div>
+    <label class="check-line" for="pref-coach"><input type="checkbox" id="pref-coach" data-f="pref-coach" ${coachOn() ? 'checked' : ''}> جمل تحفيزية وقت التمرين</label>
+  </section>`;
   const list = sessionsDesc();
   const prs = prsBySession();
   h += `<div class="sec-title"><h2>التمارين السابقة</h2><span>${list.length}</span></div>`;
@@ -1093,6 +1189,11 @@ const actions = {
       if (!x.r && it.target && it.target.reps) x.r = it.target.reps;
       const nx = it.sets[+b.dataset.j + 1];
       if (nx && !nx.done && !nx.w) nx.w = x.w;
+      if (coachOn()) {
+        const line = lineAfterSet(s, +b.dataset.i, +b.dataset.j);
+        UI.coach = { sid: s.id, text: line.text };
+        if (line.pr) toast(line.text);
+      }
     }
     save(s);
     render();
@@ -1302,6 +1403,9 @@ main.addEventListener('change', (e) => {
   } else if (el.dataset.f === 'prog-ex') {
     UI.progEx = el.value;
     render();
+  } else if (el.dataset.f === 'pref-coach') {
+    setMeta('prefs', Object.assign({}, meta.prefs, { coach: el.checked }));
+    toast(el.checked ? 'بتطلع لك جمل تحفيزية وقت التمرين' : 'وقّفنا الجمل التحفيزية');
   }
 });
 main.addEventListener('focusout', () => {
