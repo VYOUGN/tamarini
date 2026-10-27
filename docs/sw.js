@@ -1,6 +1,6 @@
 // Keeps the whole app on the phone so it opens in the gym with no internet.
 // Bump VERSION whenever any file below changes; the phone picks up the new copy on its next open.
-const VERSION = 'tamarini-v4';
+const VERSION = 'tamarini-v5';
 const FILES = [
   './',
   './index.html',
@@ -14,7 +14,8 @@ const FILES = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+  // cache: 'reload' skips the browser's own cache, so a new version never stores an old file.
+  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES.map((f) => new Request(f, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {

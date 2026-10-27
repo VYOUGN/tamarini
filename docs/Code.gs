@@ -103,12 +103,25 @@ function askUrl_(ui, tryGuess) {
   if (/\/exec$/.test(guess) && !checkUrl_(guess)) { props.setProperty('EXEC_URL', guess); return guess; }
   var r = ui.prompt('رابط Web app', 'الصق رابط Web app اللي نسخته من نافذة النشر (Deploy). لازم ينتهي بـ /exec', ui.ButtonSet.OK_CANCEL);
   if (r.getSelectedButton() !== ui.Button.OK) return null;
-  // Someone may paste the whole sync link; only the part before # is the Web app link.
-  var url = r.getResponseText().split('#')[0].replace(/\s+/g, '');
+  var pasted = r.getResponseText();
+  var url = cleanUrl_(pasted);
   var problem = checkUrl_(url);
-  if (problem) { ui.alert('الرابط فيه مشكلة', problem, ui.ButtonSet.OK); return null; }
+  if (problem) {
+    var shown = pasted.replace(/\s+/g, ' ').trim();
+    if (shown.length > 70) shown = shown.slice(0, 70) + '…';
+    ui.alert('الرابط فيه مشكلة', problem + '\n\nاللي لصقته: ' + (shown || '(فاضي)'), ui.ButtonSet.OK);
+    return null;
+  }
   props.setProperty('EXEC_URL', url);
   return url;
+}
+
+// Turns what was pasted into a Web app link: drops a #key if the whole sync link was pasted,
+// and builds the link from a Deployment ID (AKfycb…), the other value the Deploy window offers to copy.
+function cleanUrl_(text) {
+  var t = String(text || '').replace(/\s+/g, '').split('#')[0];
+  if (/^AKfycb[\w-]{20,}$/.test(t)) return 'https://script.google.com/macros/s/' + t + '/exec';
+  return t;
 }
 
 // Opens the link the way the app will, and checks it reaches this very script. Returns '' when it does.

@@ -117,6 +117,20 @@ test('"change Web app link" swaps the link and keeps the key', () => {
   assert.equal(call({ key, op: 'ping' }).ok, true);
 });
 
+test('a pasted Deployment ID is turned into its Web app link', () => {
+  const id = 'AKfycbTESTdeploymentID_1234567890-abc';
+  const url = serveAt(BASE + id + '/exec');
+  prompts.push(' ' + id + ' ');
+  gs.menuChangeUrl();
+  assert.equal(props.get('EXEC_URL'), url);
+  assert.equal(lastLink()[0], url + '#' + key);
+});
+
+test('a refused link shows what was pasted', () => {
+  assert.match(refusal(BASE + 'CUT/exec'), /اللي لصقته: https:\/\/script\.google\.com\/macros\/s\/CUT\/exec/);
+  assert.match(refusal('   '), /اللي لصقته: \(فاضي\)/);
+});
+
 test('"change Web app link" refuses a bad link and keeps the old one', () => {
   const before = props.get('EXEC_URL');
   prompts.push(BASE + 'TYPO/exec');

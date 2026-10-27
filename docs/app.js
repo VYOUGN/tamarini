@@ -64,6 +64,8 @@ function cnt(n, k) {
   const r = n % 100;
   return `${n} ${r >= 3 && r <= 10 ? f[2] : f[3]}`;
 }
+// After "من" the dual takes its genitive form: 1 من جولتين, not جولتان.
+const ofCnt = (n, k) => (n === 2 && { set: 'جولتين', day: 'يومين' }[k]) || cnt(n, k);
 function ago(ts) {
   const s = (Date.now() - ts) / 1000;
   if (s < 60) return 'قبل لحظات';
@@ -250,12 +252,16 @@ function trainedDates() {
   for (const s of sessions()) if (doneSets(s) > 0) set.add(s.date);
   return set;
 }
-const activeToday = () => sessionsDesc().find((s) => s.date === todayKey() && !s.finishedAt) || null;
+// The unfinished workout from today, or one started in the last 8 hours (a workout that runs past midnight).
+const ACTIVE_FOR_MS = 8 * 3600e3;
+const activeToday = () => sessionsDesc().find((s) => !s.finishedAt && (s.date === todayKey() || Date.now() - (s.startedAt || 0) < ACTIVE_FOR_MS)) || null;
 const hasUserData = () => [...R.values()].some((r) => r.type === 'routine' || r.type === 'session' || r.type === 'schedule');
 
-function lastSetsFor(exId, excludeId) {
+// Was workout `o` before workout `ref`? Editing an old workout compares it with what came before it.
+const isBefore = (o, ref) => o.id !== ref.id && (o.date < ref.date || (o.date === ref.date && (o.startedAt || 0) < (ref.startedAt || 0)));
+function lastSetsFor(exId, ref) {
   for (const s of sessionsDesc()) {
-    if (s.id === excludeId) continue;
+    if (!isBefore(s, ref)) continue;
     const it = s.items.find((i) => i.ex === exId && i.sets.some((x) => x.done));
     if (it) return { date: s.date, sets: it.sets.filter((x) => x.done) };
   }
@@ -379,11 +385,11 @@ function pickLine(kind, vars = {}) {
   if (recentLines.length > 6) recentLines.shift();
   return t.replace(/\{ex\}/g, vars.ex || '').replace(/\{w\}/g, vars.w == null ? '' : String(round2(vars.w)));
 }
-// The heaviest finished set for this exercise in any other workout.
-function bestBefore(exId, sid) {
+// The heaviest finished set for this exercise in the workouts before `ref`.
+function bestBefore(exId, ref) {
   let best = 0;
   for (const s of sessions()) {
-    if (s.id === sid) continue;
+    if (!isBefore(s, ref)) continue;
     for (const it of s.items) if (it.ex === exId) for (const x of it.sets) if (x.done && x.r > 0 && x.w > best) best = x.w;
   }
   return best;
@@ -393,7 +399,7 @@ function lineAfterSet(s, i, j) {
   const it = s.items[i], x = it.sets[j];
   const name = exInfo(it.ex).name;
   const total = totalSets(s), dn = doneSets(s);
-  const prev = bestBefore(it.ex, s.id);
+  const prev = bestBefore(it.ex, s);
   const heavierThanToday = it.sets.every((o, k) => k === j || !o.done || o.w < x.w);
   if (prev > 0 && x.w > prev && x.r > 0 && heavierThanToday) return { text: pickLine('pr', { ex: name, w: x.w }), pr: true };
   if (dn === total) return { text: pickLine('allDone') };
@@ -412,11 +418,13 @@ const WORKOUT_SYNC_MS = 10 * 60000;
 const PULL_EVERY_MS = 30 * 60000;
 
 const Sync = {
-  conf: null, lastPull: 0, lastPullAt: 0, busy: false, again: false, timer: 0, due: 0, error: '',
+  conf: null, lastPull: 0, lastPullAt: 0, busy: false, again: false, timer: 0, due: 0, error: '', fails: 0,
 
   // "<web app url>#<key>"
   parse(link) {
-    const s = String(link || '').trim().replace(/\s+/g, '');
+    const raw = String(link || '').replace(/\s+/g, '');
+    const at = raw.search(/https?:\/\//);
+    const s = at > 0 ? raw.slice(at) : raw;
     const i = s.lastIndexOf('#');
     if (i < 0) return null;
     const url = s.slice(0, i), key = s.slice(i + 1);
@@ -447,6 +455,7 @@ const Sync = {
         redirect: 'follow',
         keepalive: keepalive && payload.length < 60000,
       });
+      if (res.status === 404) throw new Error('not_found');
       const txt = await res.text();
       let j = null;
       try { j = JSON.parse(txt); } catch (e) { throw new Error('bad_response'); }
@@ -474,6 +483,7 @@ const Sync = {
     this.busy = true;
     renderSyncState();
     let got = 0;
+    let tooBig = false;
     try {
       await clearOutbox(missing);
       for (let i = 0; i < todo.length; i += 80) {
@@ -481,8 +491,10 @@ const Sync = {
           const r = R.get(id);
           return { id: r.id, type: r.type, updatedAt: r.updatedAt || 0, deleted: !!r.deleted, data: r };
         });
-        await this.call({ op: 'push', records: sent }, this.conf, opts.keepalive);
-        await clearOutbox(sent.filter((s) => { const cur = R.get(s.id); return cur && cur.updatedAt === s.updatedAt; }).map((s) => s.id));
+        const res = await this.call({ op: 'push', records: sent }, this.conf, opts.keepalive);
+        const refused = new Set(res.rejected || []);
+        if (refused.size) tooBig = true;
+        await clearOutbox(sent.filter((s) => { const cur = R.get(s.id); return !refused.has(s.id) && cur && cur.updatedAt === s.updatedAt; }).map((s) => s.id));
       }
       if (doPull) {
         const res = await this.call({ op: 'pull', since: this.lastPull });
@@ -502,11 +514,16 @@ const Sync = {
         this.lastPullAt = Date.now();
       }
       await setMeta('sync', { url: this.conf.url, key: this.conf.key, lastPull: this.lastPull, lastOk: Date.now() });
-      this.error = '';
+      this.error = tooBig ? 'too_big' : '';
+      this.fails = 0;
       if (got) safeRender();
     } catch (e) {
       this.error = navigator.onLine === false ? 'offline' : (e && e.message) || 'failed';
-      if (this.error !== 'bad_key') this.schedule(this.error === 'offline' ? 60000 : 30000);
+      // A wrong link stays wrong: don't spend data retrying it until the app is opened again.
+      if (!['bad_key', 'not_found', 'bad_response'].includes(this.error)) {
+        this.fails += 1;
+        this.schedule(Math.min(15 * 60000, 30000 * 2 ** (this.fails - 1)));
+      }
     } finally {
       this.busy = false;
       renderSyncState();
@@ -520,6 +537,8 @@ function syncState() {
   if (!meta.sync) return { s: 'off', short: 'بدون نسخ', long: 'النسخ الاحتياطي مو مفعّل' };
   if (Sync.busy) return { s: 'busy', short: 'يرفع…', long: 'يرفع التغييرات…' };
   if (Sync.error === 'bad_key') return { s: 'err', short: 'خطأ', long: 'المفتاح في الرابط غلط. الصق الرابط الصحيح.' };
+  if (Sync.error === 'not_found' || Sync.error === 'bad_response') return { s: 'err', short: 'خطأ', long: 'رابط المزامنة ما يشتغل. افتح جدولك من الكمبيوتر، ومن قائمة «تماريني» اختر «رابط المزامنة»، والصقه هنا من «غيّر الرابط».' };
+  if (Sync.error === 'too_big') return { s: 'err', short: 'خطأ', long: 'فيه تمرين كبير مرة ما قبله الجدول. احفظ ملف نسخة من تحت عشان ما يضيع.' };
   const n = outbox.size;
   if (n && Sync.error === 'offline') return { s: 'wait', short: 'ينتظر النت', long: `${cnt(n, 'chg')} تنتظر الإنترنت، وبترتفع لحالها` };
   if (n && Sync.error) return { s: 'wait', short: 'ينتظر', long: `${cnt(n, 'chg')} ما ارتفعت للحين. بنعيد المحاولة لحالنا.` };
@@ -542,20 +561,31 @@ async function connect(link) {
   const msgEl = $('#link-msg');
   const say = (t, cls) => { if (msgEl) { msgEl.textContent = t; msgEl.className = 'msg ' + (cls || ''); } };
   const conf = Sync.parse(link);
-  if (!conf) { say('الرابط مو صحيح. لازم يكون رابط Apps Script وبعده علامة # والمفتاح.', 'err'); return null; }
+  if (!conf) {
+    say(/\/exec$/.test(String(link).trim())
+      ? 'هذا رابط Web app بس، بدون المفتاح. رابط المزامنة تلقاه في جدولك: قائمة «تماريني» ثم «رابط المزامنة»، وفي آخره علامة # ومفتاح طويل.'
+      : 'الرابط مو صحيح. لازم يكون رابط Apps Script وبعده علامة # والمفتاح.', 'err');
+    return null;
+  }
   say('يتصل…');
   try {
     await Sync.call({ op: 'ping' }, conf);
   } catch (e) {
-    say(e.message === 'bad_key' ? 'المفتاح غلط. تأكد إنك نسخت الرابط كامل.'
-      : navigator.onLine === false ? 'ما فيه إنترنت. الربط يحتاج إنترنت أول مرة بس.'
-      : 'ما قدرنا نوصل للرابط. تأكد إنه منسوخ كامل وإن السكربت منشور.', 'err');
+    const why = {
+      bad_key: 'المفتاح غلط. تأكد إنك نسخت الرابط كامل.',
+      not_found: 'الرابط ما يفتح، غالبًا انقص وقت النسخ. انسخه من جديد من جدولك: قائمة «تماريني» ثم «رابط المزامنة».',
+      bad_response: 'الرابط يفتح صفحة ثانية مو جدولك. تأكد إن النشر مضبوط على Anyone، وانسخ الرابط من قائمة «تماريني».',
+      timeout: 'الجدول ما رد. جرّب مرة ثانية بعد شوي.',
+    };
+    say(navigator.onLine === false ? 'ما فيه إنترنت. الربط يحتاج إنترنت أول مرة بس.' : why[e.message] || 'ما قدرنا نوصل للرابط. تأكد إنه منسوخ كامل وإن السكربت منشور.', 'err');
     return null;
   }
   while (Sync.busy) await sleep(200);
   Sync.conf = conf;
   Sync.lastPull = 0;
   Sync.error = '';
+  Sync.fails = 0;
+  UI.linkDraft = '';
   await setMeta('sync', { url: conf.url, key: conf.key, lastPull: 0, lastOk: 0 });
   // The sheet gets a full copy of whatever is already on this phone.
   const all = [...R.values()];
@@ -619,7 +649,7 @@ async function importBackup(file) {
 const UI = {
   tab: 'today', screen: 'today', stack: [],
   sessionId: null, draft: null, pickFor: null, pickQuery: '', newExFor: null,
-  progEx: null, progRange: 90, linkEdit: false, dirtyRender: false, coach: null,
+  progEx: null, progRange: 90, linkEdit: false, dirtyRender: false, coach: null, linkDraft: '',
 };
 const isField = (el) => !!el && main.contains(el) && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
 
@@ -690,7 +720,7 @@ function screenSetup() {
     <section class="card form">
       <p><b>عندك رابط مزامنة؟</b> اربطه عشان ينحفظ تقدمك في جدول Google Sheets في حسابك، وما يضيع لو حذفت التطبيق. ولو كان لك بيانات قبل، بترجع كلها.</p>
       <label for="sync-link">رابط المزامنة
-        <textarea class="field" id="sync-link" rows="3" placeholder="https://script.google.com/macros/s/…/exec#…" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea>
+        <textarea class="field" id="sync-link" data-f="link" rows="3" placeholder="https://script.google.com/macros/s/…/exec#…" autocapitalize="off" autocomplete="off" spellcheck="false">${esc(UI.linkDraft)}</textarea>
       </label>
       <button class="btn primary block" type="button" data-act="setup-connect">اربط وابدأ</button>
       <p class="msg" id="link-msg" role="status"></p>
@@ -721,7 +751,7 @@ function weekCard() {
   for (const s of sessions()) if (s.date >= ws && s.date <= we) { sets += doneSets(s); vol += volume(s); }
   return `<section class="card">
     <div class="sec-title flush"><h2>هالأسبوع</h2><span class="num">${got} من ${planned}</span></div>
-    <div class="week" role="img" aria-label="تمرّنت ${cnt(got, 'day')} من ${cnt(planned, 'day')} مخطط لها هالأسبوع">${cells}</div>
+    <div class="week" role="img" aria-label="تمرّنت ${cnt(got, 'day')} من ${ofCnt(planned, 'day')} مخطط لها هالأسبوع">${cells}</div>
     <div class="week-sum"><span>${got ? cnt(got, 'day') + ' في النادي' : 'ما تمرّنت للحين هالأسبوع'}</span><span class="muted num">${cnt(sets, 'set')} · ${kg(vol)}</span></div>
   </section>`;
 }
@@ -771,7 +801,7 @@ function screenToday() {
 function exCard(s, it, i) {
   const info = exInfo(it.ex);
   const dn = it.sets.filter((x) => x.done).length;
-  const last = lastSetsFor(it.ex, s.id);
+  const last = lastSetsFor(it.ex, s);
   const lastTxt = last
     ? `آخر مرة، ${fmt(F.dm, last.date)}: <span dir="ltr" class="num">${last.sets.map((x) => `${w2s(x.w) || 0}×${x.r}`).join(' · ')}</span>`
     : 'أول مرة تسجّل هذا التمرين';
@@ -827,7 +857,7 @@ function coachLine(s, dn) {
 function screenSession(s, inline) {
   const total = totalSets(s), dn = doneSets(s);
   let h = `<div class="wk-top">
-    <div class="wk-top-row"><h2>${esc(s.name)}</h2><span class="wk-count num">${dn} <small>من ${cnt(total, 'set')}</small></span></div>
+    <div class="wk-top-row"><h2>${esc(s.name)}</h2><span class="wk-count num">${dn} <small>من ${ofCnt(total, 'set')}</small></span></div>
     <div class="bar"><i style="width:${total ? Math.round((dn / total) * 100) : 0}%"></i></div>
     ${coachLine(s, dn)}
   </div>`;
@@ -896,7 +926,8 @@ function openRoutine(id) {
 function commitDraft(silent) {
   const d = UI.draft;
   if (!d || !d.changed) return true;
-  const name = d.name.trim();
+  // Leaving the editor keeps the exercises even if the name was left empty.
+  const name = d.name.trim() || (silent && d.items.length ? 'تمرين يومي جديد' : '');
   if (!name || !d.items.length) {
     if (!silent) toast(!name ? 'اكتب اسم للتمرين اليومي' : 'أضف تمرين واحد على الأقل');
     return false;
@@ -960,7 +991,7 @@ function pickExercise(exId) {
   const p = UI.pickFor;
   if (p && p.kind === 'session') {
     const s = R.get(p.sid);
-    if (live(s)) { s.items.push(itemFromTarget(exId, 3, 0, 0, s.id)); save(s); }
+    if (live(s)) { s.items.push(itemFromTarget(exId, 3, 0, 0, s)); save(s); }
   } else if (p && p.kind === 'routine' && UI.draft) {
     UI.draft.items.push({ ex: exId, sets: 3, reps: 10, weight: 0 });
     UI.draft.changed = true;
@@ -1101,7 +1132,7 @@ function syncCard() {
   } else {
     h += `<p class="fine">${meta.sync ? 'الصق الرابط الجديد. كل اللي على الجوال بيرتفع له.' : 'تقدمك محفوظ على هذا الجوال بس. الصق رابط المزامنة عشان تنحفظ نسخة في Google Sheets.'}</p>
       <div class="form">
-        <label for="sync-link">رابط المزامنة<textarea class="field" id="sync-link" rows="3" placeholder="https://script.google.com/macros/s/…/exec#…" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea></label>
+        <label for="sync-link">رابط المزامنة<textarea class="field" id="sync-link" data-f="link" rows="3" placeholder="https://script.google.com/macros/s/…/exec#…" autocapitalize="off" autocomplete="off" spellcheck="false">${esc(UI.linkDraft)}</textarea></label>
         <button class="btn primary block" type="button" data-act="connect">اربط</button>
         <p class="msg" id="link-msg" role="status"></p>
         <div><a class="link" href="help.html">ما عندك رابط؟ هذي طريقة تسويه</a></div>
@@ -1149,12 +1180,12 @@ const SCREENS = {
 };
 
 /* ============================== actions ============================== */
-function itemFromTarget(ex, sets, reps, weight, sid) {
-  const last = lastSetsFor(ex, sid);
+function itemFromTarget(ex, sets, reps, weight, s) {
+  const last = lastSetsFor(ex, s);
   const n = Math.max(1, sets || 3);
   return {
     ex,
-    target: sets ? { sets, reps } : null,
+    target: sets && reps ? { sets, reps } : null,
     sets: Array.from({ length: n }, (_, j) => {
       const ls = last ? last.sets[Math.min(j, last.sets.length - 1)] : null;
       return { w: (ls && ls.w) || weight || 0, r: reps || (ls && ls.r) || 0, done: false };
@@ -1168,7 +1199,7 @@ function startSession(rtId) {
     routine: live(rt) ? rt.id : null, name: live(rt) ? rt.name : 'تمرين حر',
     startedAt: Date.now(), finishedAt: null, items: [],
   };
-  if (live(rt)) s.items = rt.items.map((it) => itemFromTarget(it.ex, it.sets, it.reps, it.weight, s.id));
+  if (live(rt)) s.items = rt.items.map((it) => itemFromTarget(it.ex, it.sets, it.reps, it.weight, s));
   save(s);
   go('today');
 }
@@ -1189,7 +1220,7 @@ const actions = {
       if (!x.r && it.target && it.target.reps) x.r = it.target.reps;
       const nx = it.sets[+b.dataset.j + 1];
       if (nx && !nx.done && !nx.w) nx.w = x.w;
-      if (coachOn()) {
+      if (coachOn() && !s.finishedAt) {
         const line = lineAfterSet(s, +b.dataset.i, +b.dataset.j);
         UI.coach = { sid: s.id, text: line.text };
         if (line.pr) toast(line.text);
@@ -1387,6 +1418,8 @@ main.addEventListener('input', (e) => {
     const k = f.slice(3);
     it[k] = k === 'weight' ? toNum(el.value) : Math.round(toNum(el.value));
     UI.draft.changed = true;
+  } else if (f === 'link') {
+    UI.linkDraft = el.value;
   } else if (f === 'pick-q') {
     UI.pickQuery = el.value;
     $('#pick-list').innerHTML = pickListHTML();
@@ -1425,7 +1458,7 @@ document.addEventListener('visibilitychange', () => {
     // Mid-workout the phone gets locked between every set; the 10-minute upload covers that.
     if (outbox.size && !activeToday()) Sync.run({ keepalive: true });
   } else {
-    if (Sync.conf && Date.now() - Sync.lastPullAt > PULL_EVERY_MS) Sync.run({ pull: true });
+    if (Sync.conf && (Sync.error || Date.now() - Sync.lastPullAt > PULL_EVERY_MS)) Sync.run({ pull: true });
     else if (outbox.size && !activeToday()) Sync.run();
     safeRender();
   }
