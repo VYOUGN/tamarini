@@ -286,15 +286,15 @@ a.btn, a.back { text-decoration: none; }
 
 .sets { display: grid; gap: 6px; }
 .set-row {
-  display: grid; grid-template-columns: 22px minmax(0, 1fr) 64px 48px; align-items: center; gap: 8px;
+  display: grid; grid-template-columns: 16px minmax(0, 1.2fr) minmax(0, 1fr) 44px; align-items: center; gap: 6px;
   padding: 4px; border-radius: 12px;
 }
 .set-head { font-size: 0.72rem; color: var(--muted); padding-block: 0; }
-.set-head span:nth-child(3) { text-align: center; }
+.set-head span:nth-child(2), .set-head span:nth-child(3) { text-align: center; }
 .set-row .n { text-align: center; font-weight: 800; color: var(--muted); font-size: 0.9rem; }
 .set-row.done { background: var(--done-soft); }
 .set-row.done .n { color: var(--done); }
-.stepper { display: grid; grid-template-columns: 40px minmax(0, 1fr) 40px; align-items: center; gap: 4px; }
+.stepper { display: grid; grid-template-columns: 32px minmax(0, 1fr) 32px; align-items: center; gap: 3px; }
 .stepper button {
   height: 44px; border: 0; border-radius: 10px;
   background: var(--surface-2); font-size: 1.25rem; font-weight: 700; line-height: 1;
@@ -307,9 +307,15 @@ a.btn, a.back { text-decoration: none; }
   padding: 0 4px;
 }
 .set-row.done .field { border-color: transparent; background: transparent; }
+.stepper .field { padding: 0 2px; }
+/* Two steppers in one row: on iPhone SE/mini widths, give the fields the card's spare padding. */
+@media (max-width: 389px) {
+  .ex-card { padding: 12px; }
+  .set-row { gap: 4px; }
+}
 .field.bw::placeholder { font-size: 0.72rem; font-weight: 600; }
 .check {
-  width: 48px; height: 44px; border-radius: 10px;
+  width: 44px; height: 44px; border-radius: 10px;
   border: 2px solid var(--line); background: var(--surface); color: var(--muted);
   display: grid; place-items: center;
 }

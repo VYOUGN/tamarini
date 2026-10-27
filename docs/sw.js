@@ -1,6 +1,6 @@
 // Keeps the whole app on the phone so it opens in the gym with no internet.
 // Bump VERSION whenever any file below changes; the phone picks up the new copy on its next open.
-const VERSION = 'tamarini-v7';
+const VERSION = 'tamarini-v8';
 const FILES = [
   './',
   './index.html',

@@ -878,7 +878,11 @@ function exCard(s, it, i) {
         <input class="field${bw ? ' bw' : ''}" data-f="w" data-i="${i}" data-j="${j}" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="${w2s(x.w)}" placeholder="${bw ? 'وزن الجسم' : '0'}" aria-label="${bw ? 'الوزن الزايد في الجولة' : 'وزن الجولة'} ${j + 1} بالكيلو">
         <button type="button" data-act="w-" data-i="${i}" data-j="${j}" aria-label="نقّص وزن الجولة ${j + 1} ${prefs().step} كجم">−</button>
       </div>
-      <input class="field" data-f="r" data-i="${i}" data-j="${j}" inputmode="numeric" enterkeyhint="done" autocomplete="off" value="${x.r || ''}" placeholder="0" aria-label="عدّات الجولة ${j + 1}">
+      <div class="stepper">
+        <button type="button" data-act="r+" data-i="${i}" data-j="${j}" aria-label="زِد عدّة في الجولة ${j + 1}">+</button>
+        <input class="field" data-f="r" data-i="${i}" data-j="${j}" inputmode="numeric" enterkeyhint="done" autocomplete="off" value="${x.r || ''}" placeholder="0" aria-label="عدّات الجولة ${j + 1}">
+        <button type="button" data-act="r-" data-i="${i}" data-j="${j}" aria-label="نقّص عدّة من الجولة ${j + 1}">−</button>
+      </div>
       <button type="button" class="check" data-act="toggle" data-i="${i}" data-j="${j}" aria-pressed="${x.done}" aria-label="خلّصت الجولة ${j + 1}">${ICON.check}</button>
     </div>`).join('');
   const target = it.target && it.target.sets ? ` · الهدف <span dir="ltr">${it.target.sets} × ${it.target.reps || '–'}</span>` : '';
@@ -1012,7 +1016,7 @@ function screenSettings() {
       ${sw('restSound', 'صوت لما تخلص الراحة', 'إذا الجوال على الصامت ما يطلع صوت', !p.rest)}
       ${sw('wake', 'الشاشة تظل شغّالة', wakeOk ? 'وقت التمرين بس، عشان ما تفتح القفل كل جولة' : 'جهازك ما يدعم هذي الخاصية', !wakeOk)}
       ${sw('coach', 'جمل تحفيزية', 'تحت شريط التقدّم وقت التمرين')}
-      ${row('خطوة زر + و −', 'كم كيلو يزيد أو ينقص الوزن مع كل ضغطة', seg('step', [[1, '1'], [1.25, '1.25'], [2.5, '2.5'], [5, '5']], 'خطوة الوزن'))}
+      ${row('خطوة زر + و − للوزن', 'كم كيلو يزيد أو ينقص الوزن مع كل ضغطة', seg('step', [[1, '1'], [1.25, '1.25'], [2.5, '2.5'], [5, '5']], 'خطوة الوزن'))}
     </section>
     <section class="card settings">
       <h2 class="set-h">البار والصفائح</h2>
@@ -1400,8 +1404,10 @@ const actions = {
   start: (b) => startSession(b.dataset.rt),
   'open-session': (b) => { UI.sessionId = b.dataset.sid; push('session'); },
 
-  'w+': (b) => stepWeight(b, prefs().step),
-  'w-': (b) => stepWeight(b, -prefs().step),
+  'w+': (b) => stepSet(b, 'w', prefs().step),
+  'w-': (b) => stepSet(b, 'w', -prefs().step),
+  'r+': (b) => stepSet(b, 'r', 1),
+  'r-': (b) => stepSet(b, 'r', -1),
   toggle: (b) => {
     const s = curSession(); if (!s) return;
     const it = s.items[+b.dataset.i], x = it && it.sets[+b.dataset.j];
@@ -1580,11 +1586,11 @@ const actions = {
   },
   'rest-skip': () => { UI.rest = null; tickRest(); },
 };
-function stepWeight(b, d) {
+function stepSet(b, f, d) {
   const s = curSession(); if (!s) return;
   const it = s.items[+b.dataset.i], x = it && it.sets[+b.dataset.j];
   if (!x) return;
-  x.w = Math.max(0, round2((x.w || 0) + d));
+  x[f] = Math.max(0, round2((x[f] || 0) + d));
   save(s);
   render();
 }
