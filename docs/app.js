@@ -54,6 +54,7 @@ const FORMS = {
   rec: ['سجل واحد', 'سجلان', 'سجلات', 'سجلًا'],
   chg: ['تغيير واحد', 'تغييران', 'تغييرات', 'تغييرًا'],
   sess: ['جلسة واحدة', 'جلستان', 'جلسات', 'جلسة'],
+  rep: ['عدّة واحدة', 'عدّتان', 'عدّات', 'عدّة'],
   min: ['دقيقة واحدة', 'دقيقتان', 'دقائق', 'دقيقة'],
   hr: ['ساعة', 'ساعتين', 'ساعات', 'ساعة'],
 };
@@ -64,8 +65,8 @@ function cnt(n, k) {
   const r = n % 100;
   return `${n} ${r >= 3 && r <= 10 ? f[2] : f[3]}`;
 }
-// After "من" the dual takes its genitive form: 1 من جولتين, not جولتان.
-const ofCnt = (n, k) => (n === 2 && { set: 'جولتين', day: 'يومين' }[k]) || cnt(n, k);
+// After "من" or as an object ("رجّعنا") the dual takes its -ين form: 1 من جولتين، رجّعنا سجلين.
+const ofCnt = (n, k) => (n === 2 && { set: 'جولتين', day: 'يومين', rec: 'سجلين' }[k]) || cnt(n, k);
 function ago(ts) {
   const s = (Date.now() - ts) / 1000;
   if (s < 60) return 'قبل لحظات';
@@ -85,7 +86,7 @@ const ICON = {
 
 /* ============================== exercise library ============================== */
 const MUSCLES = ['صدر', 'ظهر', 'أرجل', 'أكتاف', 'بايسبس', 'ترايسبس', 'بطن'];
-// [id, name, muscle, uses a 20 kg Olympic bar]
+// [id, name, muscle, kind]: 1 = uses an Olympic bar, 'bw' = bodyweight (the weight typed is what's added)
 const BUILTIN = [
   ['b_bench', 'بنش برس بالبار', 'صدر', 1],
   ['b_incline', 'بنش مائل بالبار', 'صدر', 1],
@@ -94,12 +95,13 @@ const BUILTIN = [
   ['b_fly', 'تفتيح دمبل', 'صدر', 0],
   ['b_chest_press', 'ضغط صدر بالجهاز', 'صدر', 0],
   ['b_cable_cross', 'كيبل كروس', 'صدر', 0],
+  ['b_pushup', 'ضغط', 'صدر', 'bw'],
   ['b_deadlift', 'ديدلفت', 'ظهر', 1],
   ['b_pulldown', 'سحب أمامي', 'ظهر', 0],
   ['b_row', 'تجديف بالبار', 'ظهر', 1],
   ['b_db_row', 'تجديف دمبل', 'ظهر', 0],
   ['b_cable_row', 'سحب أرضي بالكيبل', 'ظهر', 0],
-  ['b_pullup', 'عقلة', 'ظهر', 0],
+  ['b_pullup', 'عقلة', 'ظهر', 'bw'],
   ['b_squat', 'سكوات بالبار', 'أرجل', 1],
   ['b_leg_press', 'ليغ برس', 'أرجل', 0],
   ['b_rdl', 'رومانيان ديدلفت', 'أرجل', 1],
@@ -117,10 +119,10 @@ const BUILTIN = [
   ['b_hammer', 'هامر', 'بايسبس', 0],
   ['b_pushdown', 'تراي بالكيبل', 'ترايسبس', 0],
   ['b_skull', 'تراي فرنسي', 'ترايسبس', 0],
-  ['b_dips', 'ديبس', 'ترايسبس', 0],
+  ['b_dips', 'ديبس', 'ترايسبس', 'bw'],
   ['b_crunch', 'كرنش بالكيبل', 'بطن', 0],
-  ['b_leg_raise', 'رفع الرجلين', 'بطن', 0],
-].map(([id, name, muscle, bar]) => ({ id, type: 'exercise', name, muscle, bar: !!bar, builtin: true }));
+  ['b_leg_raise', 'رفع الرجلين', 'بطن', 'bw'],
+].map(([id, name, muscle, kind]) => ({ id, type: 'exercise', name, muscle, bar: kind === 1, bw: kind === 'bw', builtin: true }));
 const BUILTIN_MAP = new Map(BUILTIN.map((e) => [e.id, e]));
 
 // A starting push/pull/legs plan. updatedAt 1 means any real edit, here or in the backup, wins over it.
@@ -279,6 +281,15 @@ function applyTheme() {
   try { if (fixed) localStorage.setItem('tamarini-theme', t); else localStorage.removeItem('tamarini-theme'); } catch (e) {}
 }
 
+// Bodyweight exercises: the weight typed is what's added on top of the body (0 = body only). A set beats
+// another with more added weight, or the same added weight and more reps. Other exercises compare weight.
+const isBw = (exId) => !!exInfo(exId).bw;
+const beats = (a, b, bw) => a.w > b.w || (bw && a.w === b.w && a.r > b.r);
+// How a finished set reads: 60×8, or for bodyweight 8 (reps) and +10×6 (6 reps with 10 kg added).
+const setTxt = (x, bw) => (bw ? (x.w ? `+${w2s(x.w)}×${x.r}` : String(x.r)) : `${w2s(x.w) || 0}×${x.r}`);
+// A row of sets for an Arabic line: first set on the right, each one kept left-to-right inside.
+const setsHTML = (sets, bw) => sets.map((x) => `<bdi dir="ltr">${setTxt(x, bw)}</bdi>`).join(' · ');
+
 // Was workout `o` before workout `ref`? Editing an old workout compares it with what came before it.
 const isBefore = (o, ref) => o.id !== ref.id && (o.date < ref.date || (o.date === ref.date && (o.startedAt || 0) < (ref.startedAt || 0)));
 function lastSetsFor(exId, ref) {
@@ -304,27 +315,38 @@ function history(exId) {
       });
     }
   }
-  let best = 0;
-  for (const h of out) { h.pr = best > 0 && h.top.w > best; best = Math.max(best, h.top.w); }
+  const bw = isBw(exId);
+  let best = null;
+  for (const h of out) {
+    h.pr = !!best && (bw ? beats(h.top, best, true) : best.w > 0 && h.top.w > best.w);
+    if (!best || beats(h.top, best, bw)) best = h.top;
+  }
   return out;
 }
-// One chronological pass: which sessions set a new top weight on any exercise.
+// One chronological pass: which sessions set a new record on any exercise.
 function prsBySession() {
   const best = new Map();
   const out = new Map();
   for (const s of sessionsDesc().reverse()) {
     for (const it of s.items) {
-      const top = Math.max(0, ...it.sets.filter((x) => x.done && x.r > 0).map((x) => x.w || 0));
-      if (!top) continue;
-      const prev = best.get(it.ex) || 0;
-      if (prev > 0 && top > prev) {
+      const d = it.sets.filter((x) => x.done && x.r > 0);
+      if (!d.length) continue;
+      const bw = isBw(it.ex);
+      const top = d.reduce((a, b) => (beats(b, a, true) ? b : a));
+      const prev = best.get(it.ex);
+      if (prev && (bw ? beats(top, prev, true) : prev.w > 0 && top.w > prev.w) && !(out.get(s.id) || []).some((p) => p.ex === it.ex)) {
         if (!out.has(s.id)) out.set(s.id, []);
-        out.get(s.id).push({ ex: it.ex, w: top, prev });
+        out.get(s.id).push({ ex: it.ex, top, prev });
       }
-      best.set(it.ex, Math.max(prev, top));
+      if (!prev || beats(top, prev, bw)) best.set(it.ex, top);
     }
   }
   return out;
+}
+function prText(p) {
+  if (!isBw(p.ex)) return `${round2(p.top.w)} كجم، كان ${round2(p.prev.w)}`;
+  if (p.top.w === p.prev.w) return `${cnt(p.top.r, 'rep')}، كان ${p.prev.r}`;
+  return `+${round2(p.top.w)} كجم، كان ${p.prev.w ? '+' + round2(p.prev.w) : 'بدون وزن زايد'}`;
 }
 
 // Plates per side for the bar weight in settings, IWF colors.
@@ -393,6 +415,11 @@ const COACH = {
     '{w} كجم في {ex}! أثقل من أي مرة قبل 💪',
     'كسرت رقمك في {ex}: {w} كجم!',
   ],
+  prReps: [
+    'رقم جديد في {ex}: {r} 🔥',
+    '{r} في {ex}! أكثر من أي مرة قبل 💪',
+    'كسرت رقمك في {ex}: {r}!',
+  ],
   allDone: [
     'خلّصت كل الجولات! اضغط «إنهاء التمرين» تحت',
     'كل الجولات خلصت 💪 اضغط «إنهاء التمرين» وارتاح',
@@ -406,14 +433,16 @@ function pickLine(kind, vars = {}) {
   const t = (fresh.length ? fresh : pool)[Math.floor(Math.random() * (fresh.length || pool.length))];
   recentLines.push(t);
   if (recentLines.length > 6) recentLines.shift();
-  return t.replace(/\{ex\}/g, vars.ex || '').replace(/\{w\}/g, vars.w == null ? '' : String(round2(vars.w)));
+  return t.replace(/\{ex\}/g, vars.ex || '').replace(/\{w\}/g, vars.w == null ? '' : String(round2(vars.w)))
+    .replace(/\{r\}/g, vars.r == null ? '' : cnt(vars.r, 'rep'));
 }
-// The heaviest finished set for this exercise in the workouts before `ref`.
+// The best finished set for this exercise in the workouts before `ref` (null if none).
 function bestBefore(exId, ref) {
-  let best = 0;
+  const bw = isBw(exId);
+  let best = null;
   for (const s of sessions()) {
     if (!isBefore(s, ref)) continue;
-    for (const it of s.items) if (it.ex === exId) for (const x of it.sets) if (x.done && x.r > 0 && x.w > best) best = x.w;
+    for (const it of s.items) if (it.ex === exId) for (const x of it.sets) if (x.done && x.r > 0 && (!best || beats(x, best, bw))) best = x;
   }
   return best;
 }
@@ -422,9 +451,15 @@ function lineAfterSet(s, i, j) {
   const it = s.items[i], x = it.sets[j];
   const name = exInfo(it.ex).name;
   const total = totalSets(s), dn = doneSets(s);
+  const bw = isBw(it.ex);
   const prev = bestBefore(it.ex, s);
-  const heavierThanToday = it.sets.every((o, k) => k === j || !o.done || o.w < x.w);
-  if (prev > 0 && x.w > prev && x.r > 0 && heavierThanToday) return { text: pickLine('pr', { ex: name, w: x.w }), pr: true };
+  const bestToday = it.sets.every((o, k) => k === j || !o.done || beats(x, o, bw));
+  if (prev && x.r > 0 && bestToday && (bw ? beats(x, prev, true) : prev.w > 0 && x.w > prev.w)) {
+    // Same added weight as the best so far (earlier today included) means the record is in reps.
+    const bestSoFar = it.sets.reduce((b, o, k) => (k !== j && o.done && beats(o, b, bw) ? o : b), prev);
+    const text = bw && x.w === bestSoFar.w ? pickLine('prReps', { ex: name, r: x.r }) : pickLine('pr', { ex: name, w: x.w });
+    return { text, pr: true };
+  }
   if (dn === total) return { text: pickLine('allDone') };
   if (it.sets.every((o) => o.done)) return { text: pickLine('exDone', { ex: name }) };
   if (total - dn === 1) return { text: pickLine('last') };
@@ -664,7 +699,7 @@ async function importBackup(file) {
     Sync.schedule(1000);
   }
   if (!meta.setup) await setMeta('setup', true);
-  toast(apply.length ? `رجّعنا ${cnt(apply.length, 'rec')}` : 'كل اللي في الملف موجود عندك');
+  toast(apply.length ? `رجّعنا ${ofCnt(apply.length, 'rec')}` : 'كل اللي في الملف موجود عندك');
   if (UI.screen === 'setup') go('today'); else render();
 }
 
@@ -829,9 +864,10 @@ function screenToday() {
 function exCard(s, it, i) {
   const info = exInfo(it.ex);
   const dn = it.sets.filter((x) => x.done).length;
+  const bw = !!info.bw;
   const last = lastSetsFor(it.ex, s);
   const lastTxt = last
-    ? `آخر مرة، ${fmt(F.dm, last.date)}: <span dir="ltr" class="num">${last.sets.map((x) => `${w2s(x.w) || 0}×${x.r}`).join(' · ')}</span>`
+    ? `آخر مرة، ${fmt(F.dm, last.date)}${bw ? '، وزن الجسم' : ''}: <span class="num">${setsHTML(last.sets, bw)}</span>`
     : 'أول مرة تسجّل هذا التمرين';
   const cur = it.sets.find((x) => !x.done) || it.sets[it.sets.length - 1];
   const rows = it.sets.map((x, j) => `
@@ -839,7 +875,7 @@ function exCard(s, it, i) {
       <span class="n num">${j + 1}</span>
       <div class="stepper">
         <button type="button" data-act="w+" data-i="${i}" data-j="${j}" aria-label="زِد وزن الجولة ${j + 1} ${prefs().step} كجم">+</button>
-        <input class="field" data-f="w" data-i="${i}" data-j="${j}" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="${w2s(x.w)}" placeholder="0" aria-label="وزن الجولة ${j + 1} بالكيلو">
+        <input class="field${bw ? ' bw' : ''}" data-f="w" data-i="${i}" data-j="${j}" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="${w2s(x.w)}" placeholder="${bw ? 'وزن الجسم' : '0'}" aria-label="${bw ? 'الوزن الزايد في الجولة' : 'وزن الجولة'} ${j + 1} بالكيلو">
         <button type="button" data-act="w-" data-i="${i}" data-j="${j}" aria-label="نقّص وزن الجولة ${j + 1} ${prefs().step} كجم">−</button>
       </div>
       <input class="field" data-f="r" data-i="${i}" data-j="${j}" inputmode="numeric" enterkeyhint="done" autocomplete="off" value="${x.r || ''}" placeholder="0" aria-label="عدّات الجولة ${j + 1}">
@@ -848,12 +884,12 @@ function exCard(s, it, i) {
   const target = it.target && it.target.sets ? ` · الهدف <span dir="ltr">${it.target.sets} × ${it.target.reps || '–'}</span>` : '';
   return `<article class="card ex-card ${dn && dn === it.sets.length ? 'complete' : ''}">
     <div class="ex-head">
-      <div><h3>${esc(info.name)}</h3><span class="tag">${esc(info.muscle)}${target}</span></div>
+      <div><h3>${esc(info.name)}</h3><span class="tag">${esc(info.muscle)}${bw ? ' · وزن الجسم' : ''}${target}</span></div>
       <span class="count num">${dn} / ${it.sets.length}</span>
     </div>
     <p class="last">${lastTxt}</p>
     <div class="sets">
-      ${it.sets.length ? '<div class="set-row set-head"><span>#</span><span>الوزن (كجم)</span><span>العدّات</span><span></span></div>' : ''}
+      ${it.sets.length ? '<div class="set-row set-head"><span>#</span><span>' + (bw ? 'وزن زايد (كجم)' : 'الوزن (كجم)') + '</span><span>العدّات</span><span></span></div>' : ''}
       ${rows}
     </div>
     <p class="plates" data-plates="${i}">${info.bar && cur ? platesHTML(cur.w) : ''}</p>
@@ -874,7 +910,7 @@ function summaryCard(s) {
       <div><b>${Math.round(volume(s)).toLocaleString('en-US')}</b><span>مجموع الكيلوات</span></div>
       <div><b>${mins || '–'}</b><span>الدقايق</span></div>
     </div>
-    ${prs.length ? `<ul class="plan-list pr-list">${prs.map((p) => `<li><span><span class="pr-chip">رقم جديد</span> ${esc(exInfo(p.ex).name)}</span><span class="num">${round2(p.w)} كجم، كان ${round2(p.prev)}</span></li>`).join('')}</ul>` : ''}
+    ${prs.length ? `<ul class="plan-list pr-list">${prs.map((p) => `<li><span><span class="pr-chip">رقم جديد</span> ${esc(exInfo(p.ex).name)}</span><span class="num">${prText(p)}</span></li>`).join('')}</ul>` : ''}
   </section>`;
 }
 /* ---------- rest timer ---------- */
@@ -1053,7 +1089,7 @@ function screenPlan() {
     const list = all.filter((e) => e.muscle === m);
     if (!list.length) continue;
     h += `<details class="lib-group"><summary><h3>${esc(m)} <span class="muted">(${list.length})</span></h3></summary><ul>
-      ${list.map((e) => `<li><span>${esc(e.name)}${e.bar ? '<span class="bar-tag">بار</span>' : ''}</span>${e.builtin ? '' : `<button class="link del" type="button" data-act="del-ex" data-ex="${e.id}">حذف</button>`}</li>`).join('')}
+      ${list.map((e) => `<li><span>${esc(e.name)}${kindTag(e)}</span>${e.builtin ? '' : `<button class="link del" type="button" data-act="del-ex" data-ex="${e.id}">حذف</button>`}</li>`).join('')}
     </ul></details>`;
   }
   h += '</section><button class="btn quiet block" type="button" data-act="new-ex">+ أضف تمرين للمكتبة</button>';
@@ -1102,7 +1138,7 @@ function screenRoutine() {
     <div class="rt-fields">
       <label>الجولات<input class="field" data-f="rt-sets" data-i="${i}" inputmode="numeric" value="${it.sets || ''}" autocomplete="off"></label>
       <label>العدّات<input class="field" data-f="rt-reps" data-i="${i}" inputmode="numeric" value="${it.reps || ''}" autocomplete="off"></label>
-      <label>الوزن (كجم)<input class="field" data-f="rt-weight" data-i="${i}" inputmode="decimal" value="${w2s(it.weight)}" placeholder="–" autocomplete="off"></label>
+      <label>الوزن (كجم)<input class="field" data-f="rt-weight" data-i="${i}" inputmode="decimal" value="${w2s(it.weight)}" placeholder="${exInfo(it.ex).bw ? 'وزن الجسم' : '–'}" autocomplete="off"></label>
     </div>
   </li>`).join('')}</ol>`;
   if (!d.items.length) h += '<p class="empty">أضف التمارين اللي تسويها في هذا اليوم.</p>';
@@ -1114,6 +1150,7 @@ function screenRoutine() {
 }
 
 /* ---------- exercise picker ---------- */
+const kindTag = (e) => (e.bar ? '<span class="bar-tag">بار</span>' : e.bw ? '<span class="bar-tag">وزن الجسم</span>' : '');
 function pickListHTML() {
   const q = norm(UI.pickQuery);
   const all = exercises().filter((e) => !q || norm(e.name).includes(q));
@@ -1122,7 +1159,7 @@ function pickListHTML() {
   for (const m of MUSCLES) {
     const list = all.filter((e) => e.muscle === m);
     if (!list.length) continue;
-    h += `<div class="pick-group"><h3>${esc(m)}</h3>${list.map((e) => `<button class="pick" type="button" data-act="pick" data-ex="${e.id}"><span>${esc(e.name)}</span>${e.bar ? '<span class="bar-tag">بار</span>' : ''}</button>`).join('')}</div>`;
+    h += `<div class="pick-group"><h3>${esc(m)}</h3>${list.map((e) => `<button class="pick" type="button" data-act="pick" data-ex="${e.id}"><span>${esc(e.name)}</span>${kindTag(e)}</button>`).join('')}</div>`;
   }
   return h;
 }
@@ -1151,7 +1188,11 @@ function screenNewEx() {
   const h = `<section class="card form">
     <label for="ne-name">اسم التمرين<input class="field" id="ne-name" placeholder="مثلًا: بنش هاك سكوات" autocomplete="off" enterkeyhint="done"></label>
     <label for="ne-muscle">العضلة<select class="field" id="ne-muscle">${MUSCLES.map((m) => `<option>${esc(m)}</option>`).join('')}</select></label>
-    <label class="check-line"><input type="checkbox" id="ne-bar"> بالبار الأولمبي (20 كجم)، عشان يحسب لك الصفائح</label>
+    <label for="ne-kind">النوع<select class="field" id="ne-kind">
+      <option value="">أوزان عادية (دمبل، جهاز، كيبل)</option>
+      <option value="bar">بالبار الأولمبي، ويحسب لك الصفائح</option>
+      <option value="bw">بوزن الجسم (عقلة، ضغط، ديبس…)</option>
+    </select></label>
     <button class="btn primary block" type="button" data-act="ne-save">أضف التمرين</button>
   </section>`;
   return { title: 'تمرين جديد', subtitle: 'يضاف لمكتبة التمارين', html: h, back: true };
@@ -1235,31 +1276,39 @@ function screenProgress() {
   const from = UI.progRange ? addDays(todayKey(), -UI.progRange) : '0000';
   let hs = all.filter((x) => x.date >= from);
   if (!hs.length) hs = all.slice(-1);
+  const bw = isBw(exId);
   const byReps = all.every((x) => !x.top.w);
   const best = Math.max(...all.map((x) => (byReps ? x.reps : x.top.w)));
+  const maxReps = Math.max(...all.map((x) => x.reps));
+  const lineName = byReps ? 'أكثر عدّات' : bw ? 'أعلى وزن زايد' : 'أعلى وزن';
   const bestE1 = Math.max(...all.map((x) => x.e1));
   const last = all[all.length - 1];
   const first = hs[0];
   const delta = byReps ? last.reps - first.reps : round2(last.top.w - first.top.w);
-  const unit = byReps ? 'عدّة' : 'كجم';
-  const pts = hs.map((x) => ({ x: dateOf(x.date).getTime(), y: byReps ? x.reps : x.top.w, y2: byReps ? null : round1(x.e1), pr: x.pr }));
+  // The word after a number: 3–10 take the plural (8 عدّات), the rest the singular (12 عدّة).
+  const repWord = (n) => (Math.abs(n) % 100 >= 3 && Math.abs(n) % 100 <= 10 ? 'عدّات' : 'عدّة');
+  const unitFor = (n) => (byReps ? repWord(n) : 'كجم');
+  const pts = hs.map((x) => ({ x: dateOf(x.date).getTime(), y: byReps ? x.reps : x.top.w, y2: byReps || bw ? null : round1(x.e1), pr: x.pr }));
   const ranges = [[30, 'شهر'], [90, '3 شهور'], [365, 'سنة'], [0, 'الكل']];
   h += `<div class="sec-title"><h2>تقدّم الأوزان</h2></div>
   <section class="card">
     <label class="form"><span class="sr">التمرين</span><select class="field" id="prog-ex" data-f="prog-ex" aria-label="اختر التمرين">${withData.map((w) => `<option value="${w.e.id}" ${w.e.id === exId ? 'selected' : ''}>${esc(w.e.name)}</option>`).join('')}</select></label>
+    ${bw ? '<p class="fine" style="margin-top:8px">تمرين بوزن الجسم: الرقم لحاله عدد العدّات، و«+» يعني وزن زايد فوق وزن جسمك.</p>' : ''}
     <div class="stats" style="margin-top:12px">
-      <div class="stat"><span>${byReps ? 'أكثر عدّات' : 'أعلى وزن'}</span><b>${round2(best)} <small>${unit}</small></b></div>
-      <div class="stat"><span>${byReps ? 'آخر مرة' : 'أقصى وزن لعدّة وحدة (تقدير)'}</span><b>${byReps ? last.reps : Math.round(bestE1)} <small>${unit}</small></b></div>
-      <div class="stat"><span>آخر مرة</span><b dir="ltr" class="num">${byReps ? last.reps : `${w2s(last.top.w)}×${last.top.r}`}</b></div>
-      <div class="stat"><span>التغيّر في الفترة</span><b class="${delta > 0 ? 'up' : ''}" dir="ltr">${delta > 0 ? '+' : ''}${delta} <small>${unit}</small></b></div>
+      <div class="stat"><span>${lineName}</span><b dir="ltr">${bw && !byReps ? '+' : ''}${round2(best)} <small>${unitFor(best)}</small></b></div>
+      ${byReps ? `<div class="stat"><span>آخر مرة</span><b>${last.reps} <small>${repWord(last.reps)}</small></b></div>`
+        : bw ? `<div class="stat"><span>أكثر عدّات</span><b>${maxReps} <small>${repWord(maxReps)}</small></b></div>`
+        : `<div class="stat"><span>أقصى وزن لعدّة وحدة (تقدير)</span><b>${Math.round(bestE1)} <small>كجم</small></b></div>`}
+      <div class="stat"><span>آخر مرة</span><b dir="ltr" class="num">${byReps ? last.reps : setTxt(last.top, bw)}</b></div>
+      <div class="stat"><span>التغيّر في الفترة</span><b class="${delta > 0 ? 'up' : ''}" dir="ltr">${delta > 0 ? '+' : ''}${delta} <small>${unitFor(delta)}</small></b></div>
     </div>
     <div class="seg" role="group" aria-label="الفترة" style="margin-top:14px">${ranges.map(([r, l]) => `<button type="button" data-act="range" data-r="${r}" aria-pressed="${UI.progRange === r}">${l}</button>`).join('')}</div>
-    ${lineChart(pts, `${exInfo(exId).name}: ${byReps ? 'أكثر عدّات' : 'أعلى وزن'} في كل تمرين`)}
-    <div class="legend"><span><i></i>${byReps ? 'أكثر عدّات' : 'أعلى وزن رفعته'}</span>${byReps ? '' : '<span><i class="d"></i>أقصى وزن تقديري لعدّة وحدة</span>'}<span><i class="p"></i>رقم جديد</span></div>
+    ${lineChart(pts, `${exInfo(exId).name}: ${lineName} في كل تمرين`)}
+    <div class="legend"><span><i></i>${lineName}</span>${byReps || bw ? '' : '<span><i class="d"></i>أقصى وزن تقديري لعدّة وحدة</span>'}<span><i class="p"></i>رقم جديد</span></div>
   </section>
   <section class="card">
     <div class="sec-title flush"><h2>آخر الجلسات</h2><span>${cnt(all.length, 'sess')}</span></div>
-    <ul class="hist">${all.slice(-10).reverse().map((x) => `<li><span>${fmt(F.dm, x.date)} ${x.pr ? '<span class="pr-chip">رقم جديد</span>' : ''}</span><span class="sets-txt">${x.sets.map((s) => `${w2s(s.w) || 0}×${s.r}`).join(' · ')}</span></li>`).join('')}</ul>
+    <ul class="hist">${all.slice(-10).reverse().map((x) => `<li><span>${fmt(F.dm, x.date)} ${x.pr ? '<span class="pr-chip">رقم جديد</span>' : ''}</span><span class="sets-txt">${setsHTML(x.sets, bw)}</span></li>`).join('')}</ul>
   </section>`;
   return { title: 'التقدّم', subtitle: 'أوزانك وأيام النادي', html: h, tabs: true };
 }
@@ -1464,7 +1513,8 @@ const actions = {
   'ne-save': () => {
     const name = $('#ne-name').value.trim();
     if (!name) { toast('اكتب اسم التمرين'); return; }
-    const rec = { id: uid('ex'), type: 'exercise', name, muscle: $('#ne-muscle').value, bar: $('#ne-bar').checked };
+    const kind = $('#ne-kind').value;
+    const rec = { id: uid('ex'), type: 'exercise', name, muscle: $('#ne-muscle').value, bar: kind === 'bar', bw: kind === 'bw' };
     save(rec);
     const forPick = UI.newExFor;
     UI.screen = UI.stack.pop() || UI.tab;
@@ -1487,7 +1537,7 @@ const actions = {
     const seeded = await seedIfEmpty();
     await setMeta('setup', true);
     go('today');
-    toast(res.got && !seeded ? `رجّعنا ${cnt(res.got, 'rec')}` : 'انربط. جهّزنا لك جدول تقدر تعدّل عليه');
+    toast(res.got && !seeded ? `رجّعنا ${ofCnt(res.got, 'rec')}` : 'انربط. جهّزنا لك جدول تقدر تعدّل عليه');
   },
   'setup-skip': async () => {
     await seedIfEmpty();
@@ -1501,7 +1551,7 @@ const actions = {
     if (!res) return;
     UI.linkEdit = false;
     render();
-    toast(res.got ? `انربط ورجّعنا ${cnt(res.got, 'rec')}` : 'انربط. كل تغيير بيرتفع للجدول');
+    toast(res.got ? `انربط ورجّعنا ${ofCnt(res.got, 'rec')}` : 'انربط. كل تغيير بيرتفع للجدول');
   },
   'sync-now': () => Sync.run({ pull: true }),
   'edit-link': () => { UI.linkEdit = true; render(); },
