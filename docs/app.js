@@ -29,9 +29,9 @@ const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDat
 const dateOf = (k) => { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d, 12); };
 const todayKey = () => keyOf(new Date());
 const addDays = (k, n) => { const d = dateOf(k); d.setDate(d.getDate() + n); return keyOf(d); };
-// Weeks start on Saturday.
-const weekStart = (k) => addDays(k, -((dateOf(k).getDay() + 1) % 7));
-const DAY_ORDER = [6, 0, 1, 2, 3, 4, 5];
+// Weeks start on the day picked in settings (Saturday unless changed).
+const weekStart = (k) => addDays(k, -((dateOf(k).getDay() - prefs().weekStart + 7) % 7));
+const dayOrder = () => Array.from({ length: 7 }, (_, i) => (prefs().weekStart + i) % 7);
 const DAY_NAME = { 6: 'السبت', 0: 'الأحد', 1: 'الاثنين', 2: 'الثلاثاء', 3: 'الأربعاء', 4: 'الخميس', 5: 'الجمعة' };
 const DAY_SHORT = { 6: 'س', 0: 'ح', 1: 'ن', 2: 'ث', 3: 'ر', 4: 'خ', 5: 'ج' };
 
@@ -171,6 +171,7 @@ function sane(r) {
   }
   if (r.type === 'routine') r.items = Array.isArray(r.items) ? r.items.filter((it) => it && it.ex) : [];
   if (r.type === 'schedule' && (!r.days || typeof r.days !== 'object')) r.days = {};
+  if (r.type === 'prefs' && (!r.values || typeof r.values !== 'object')) r.values = {};
   return r;
 }
 async function loadAll() {
@@ -240,7 +241,7 @@ function routineOnDay(dow) {
   return live(r) && r.type === 'routine' ? r : null;
 }
 const routineFor = (k) => routineOnDay(dateOf(k).getDay());
-const plannedDays = () => DAY_ORDER.filter((d) => routineOnDay(d)).length;
+const plannedDays = () => dayOrder().filter((d) => routineOnDay(d)).length;
 const sessions = () => [...R.values()].filter((r) => r.type === 'session' && live(r));
 const sessionsDesc = () => sessions().sort((a, b) => (a.date === b.date ? (b.startedAt || 0) - (a.startedAt || 0) : a.date < b.date ? 1 : -1));
 const doneSets = (s) => s.items.reduce((a, it) => a + it.sets.filter((x) => x.done).length, 0);
@@ -256,6 +257,27 @@ function trainedDates() {
 const ACTIVE_FOR_MS = 8 * 3600e3;
 const activeToday = () => sessionsDesc().find((s) => !s.finishedAt && (s.date === todayKey() || Date.now() - (s.startedAt || 0) < ACTIVE_FOR_MS)) || null;
 const hasUserData = () => [...R.values()].some((r) => r.type === 'routine' || r.type === 'session' || r.type === 'schedule');
+
+/* ============================== settings ============================== */
+// Settings are a normal record, so they're backed up and come back after a reinstall like everything else.
+const PREF_DEFAULTS = { rest: 90, restSound: true, wake: false, coach: true, step: 2.5, plates: true, bar: 20, weekStart: 6, theme: 'auto' };
+function prefs() {
+  const r = R.get('prefs');
+  return Object.assign({}, PREF_DEFAULTS, live(r) && r.values ? r.values : {});
+}
+function setPref(k, v) {
+  const r = R.get('prefs') || { id: 'prefs', type: 'prefs', values: {} };
+  r.values = Object.assign({}, r.values, { [k]: v });
+  save(r);
+  applyTheme();
+}
+// The theme is also kept in localStorage so the page paints in it before the database opens.
+function applyTheme() {
+  const t = prefs().theme;
+  const fixed = t === 'light' || t === 'dark';
+  if (fixed) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
+  try { if (fixed) localStorage.setItem('tamarini-theme', t); else localStorage.removeItem('tamarini-theme'); } catch (e) {}
+}
 
 // Was workout `o` before workout `ref`? Editing an old workout compares it with what came before it.
 const isBefore = (o, ref) => o.id !== ref.id && (o.date < ref.date || (o.date === ref.date && (o.startedAt || 0) < (ref.startedAt || 0)));
@@ -305,12 +327,13 @@ function prsBySession() {
   return out;
 }
 
-// Plates per side for a 20 kg bar, IWF colors.
+// Plates per side for the bar weight in settings, IWF colors.
 const PLATES = [[25, '--plate-25'], [20, '--plate-20'], [15, '--plate-15'], [10, '--plate-10'], [5, '--plate-5'], [2.5, '--plate-2'], [1.25, '--plate-1']];
 function platesHTML(total) {
-  if (!total || total < 20) return '';
-  if (total === 20) return '<span>البار لحاله، 20 كجم</span>';
-  let side = round2((total - 20) / 2);
+  const { plates, bar } = prefs();
+  if (!plates || !total || total < bar) return '';
+  if (total === bar) return `<span>البار لحاله، ${bar} كجم</span>`;
+  let side = round2((total - bar) / 2);
   const counts = [];
   for (const [p, c] of PLATES) {
     let n = 0;
@@ -375,7 +398,7 @@ const COACH = {
     'كل الجولات خلصت 💪 اضغط «إنهاء التمرين» وارتاح',
   ],
 };
-const coachOn = () => !(meta.prefs && meta.prefs.coach === false);
+const coachOn = () => prefs().coach;
 const recentLines = [];
 function pickLine(kind, vars = {}) {
   const pool = COACH[kind];
@@ -649,7 +672,7 @@ async function importBackup(file) {
 const UI = {
   tab: 'today', screen: 'today', stack: [],
   sessionId: null, draft: null, pickFor: null, pickQuery: '', newExFor: null,
-  progEx: null, progRange: 90, linkEdit: false, dirtyRender: false, coach: null, linkDraft: '',
+  progEx: null, progRange: 90, linkEdit: false, dirtyRender: false, coach: null, linkDraft: '', rest: null,
 };
 const isField = (el) => !!el && main.contains(el) && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
 
@@ -696,6 +719,8 @@ function armed(btn, label) {
 /* ============================== render ============================== */
 function render() {
   UI.dirtyRender = false;
+  applyTheme(); // settings may have just arrived from the backup
+
   const v = SCREENS[UI.screen]();
   $('#title').textContent = v.title;
   $('#subtitle').textContent = v.subtitle || '';
@@ -706,7 +731,10 @@ function render() {
   for (const b of document.querySelectorAll('#tabs [data-tab]')) {
     if (b.dataset.tab === UI.tab && v.tabs) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   }
+  $('#gear').hidden = UI.screen === 'setup' || UI.screen === 'settings';
   renderSyncState();
+  tickRest();
+  syncWakeLock();
 }
 function safeRender() {
   if (isField(document.activeElement)) UI.dirtyRender = true; else render();
@@ -810,9 +838,9 @@ function exCard(s, it, i) {
     <div class="set-row ${x.done ? 'done' : ''}">
       <span class="n num">${j + 1}</span>
       <div class="stepper">
-        <button type="button" data-act="w+" data-i="${i}" data-j="${j}" aria-label="زِد وزن الجولة ${j + 1}">+</button>
+        <button type="button" data-act="w+" data-i="${i}" data-j="${j}" aria-label="زِد وزن الجولة ${j + 1} ${prefs().step} كجم">+</button>
         <input class="field" data-f="w" data-i="${i}" data-j="${j}" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="${w2s(x.w)}" placeholder="0" aria-label="وزن الجولة ${j + 1} بالكيلو">
-        <button type="button" data-act="w-" data-i="${i}" data-j="${j}" aria-label="نقّص وزن الجولة ${j + 1}">−</button>
+        <button type="button" data-act="w-" data-i="${i}" data-j="${j}" aria-label="نقّص وزن الجولة ${j + 1} ${prefs().step} كجم">−</button>
       </div>
       <input class="field" data-f="r" data-i="${i}" data-j="${j}" inputmode="numeric" enterkeyhint="done" autocomplete="off" value="${x.r || ''}" placeholder="0" aria-label="عدّات الجولة ${j + 1}">
       <button type="button" class="check" data-act="toggle" data-i="${i}" data-j="${j}" aria-pressed="${x.done}" aria-label="خلّصت الجولة ${j + 1}">${ICON.check}</button>
@@ -849,6 +877,122 @@ function summaryCard(s) {
     ${prs.length ? `<ul class="plan-list pr-list">${prs.map((p) => `<li><span><span class="pr-chip">رقم جديد</span> ${esc(exInfo(p.ex).name)}</span><span class="num">${round2(p.w)} كجم، كان ${round2(p.prev)}</span></li>`).join('')}</ul>` : ''}
   </section>`;
 }
+/* ---------- rest timer ---------- */
+// Starts when a set is ticked (unless it was the last one) and counts down in the workout header.
+let audioCtx = null;
+function startRest(s) {
+  const p = prefs();
+  if (!p.rest || s.finishedAt || doneSets(s) >= totalSets(s)) { UI.rest = null; return; }
+  UI.rest = { sid: s.id, until: Date.now() + p.rest * 1000, total: p.rest * 1000, rang: false };
+  // Sound can only start from a tap, so the audio is opened now for the beep later.
+  if (p.restSound) {
+    try {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+    } catch (e) { audioCtx = null; }
+  }
+}
+function restBox(s) {
+  if (!UI.rest || UI.rest.sid !== s.id || s.finishedAt) return '';
+  return `<div class="rest-box" id="rest" role="timer" aria-live="off">
+    <div class="rest-row"><span id="rest-label">الراحة</span><b id="rest-time"></b><button class="link" type="button" data-act="rest-skip">تخطّي</button></div>
+    <div class="bar rest-bar"><i id="rest-fill"></i></div>
+  </div>`;
+}
+const mmss = (ms) => { const t = Math.ceil(ms / 1000); return `${Math.floor(t / 60)}:${pad(t % 60)}`; };
+function tickRest() {
+  const box = $('#rest', main);
+  const r = UI.rest;
+  if (!r) { if (box) box.remove(); return; }
+  const left = r.until - Date.now();
+  if (left <= 0 && !r.rang) {
+    r.rang = true;
+    // Coming back to the app long after the rest ended shouldn't beep.
+    if (left > -3000 && document.visibilityState === 'visible') restOver();
+  }
+  if (left <= -8000) { UI.rest = null; if (box) box.remove(); return; }
+  if (!box) return;
+  box.classList.toggle('over', left <= 0);
+  $('#rest-time', box).textContent = left > 0 ? mmss(left) : 'يلا!';
+  $('#rest-label', box).textContent = left > 0 ? 'الراحة' : 'خلصت الراحة، الجولة الجاية';
+  $('#rest-fill', box).style.width = `${Math.max(0, Math.min(100, (left / r.total) * 100))}%`;
+}
+function restOver() {
+  if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+  if (!prefs().restSound || !audioCtx) return;
+  try {
+    const t0 = audioCtx.currentTime;
+    for (const d of [0, 0.25, 0.5]) {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.frequency.value = 880;
+      g.gain.setValueAtTime(0.0001, t0 + d);
+      g.gain.exponentialRampToValueAtTime(0.3, t0 + d + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + d + 0.18);
+      o.connect(g).connect(audioCtx.destination);
+      o.start(t0 + d);
+      o.stop(t0 + d + 0.2);
+    }
+  } catch (e) {}
+}
+setInterval(tickRest, 250);
+
+/* ---------- keep the screen on ---------- */
+// Only while an unfinished workout is on screen, and only if the setting is on.
+let wakeLock = null, wakeBusy = false;
+function workoutOnScreen() {
+  if (UI.screen === 'today') return activeToday();
+  if (UI.screen === 'session') { const s = R.get(UI.sessionId); return live(s) && !s.finishedAt ? s : null; }
+  return null;
+}
+async function syncWakeLock() {
+  if (wakeBusy || !('wakeLock' in navigator)) return;
+  const want = prefs().wake && document.visibilityState === 'visible' && !!workoutOnScreen();
+  wakeBusy = true;
+  try {
+    if (want && !wakeLock) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } else if (!want && wakeLock) {
+      await wakeLock.release();
+      wakeLock = null;
+    }
+  } catch (e) {
+    wakeLock = null;
+  } finally {
+    wakeBusy = false;
+  }
+}
+
+/* ---------- settings ---------- */
+function screenSettings() {
+  const p = prefs();
+  const seg = (k, opts, label) => `<div class="seg full" role="group" aria-label="${label}">${opts.map(([v, l]) => `<button type="button" data-act="pref" data-k="${k}" data-v="${v}" aria-pressed="${String(p[k]) === String(v)}">${l}</button>`).join('')}</div>`;
+  const row = (label, note, control) => `<div class="set-line"><div><b>${label}</b>${note ? `<small>${note}</small>` : ''}</div>${control}</div>`;
+  const sw = (k, label, note, disabled) => `<label class="switch-line"><span><b>${label}</b>${note ? `<small>${note}</small>` : ''}</span><input type="checkbox" class="switch" role="switch" data-pref="${k}" ${p[k] ? 'checked' : ''} ${disabled ? 'disabled' : ''}></label>`;
+  const wakeOk = 'wakeLock' in navigator;
+  const h = `<section class="card settings">
+      <h2 class="set-h">التمرين</h2>
+      ${row('مؤقت الراحة', 'يبدأ لحاله كل ما تخلّص جولة، ويطلع فوق تحت شريط التقدّم', seg('rest', [[0, 'إيقاف'], [60, '1:00'], [90, '1:30'], [120, '2:00'], [180, '3:00']], 'مؤقت الراحة'))}
+      ${sw('restSound', 'صوت لما تخلص الراحة', 'إذا الجوال على الصامت ما يطلع صوت', !p.rest)}
+      ${sw('wake', 'الشاشة تظل شغّالة', wakeOk ? 'وقت التمرين بس، عشان ما تفتح القفل كل جولة' : 'جهازك ما يدعم هذي الخاصية', !wakeOk)}
+      ${sw('coach', 'جمل تحفيزية', 'تحت شريط التقدّم وقت التمرين')}
+      ${row('خطوة زر + و −', 'كم كيلو يزيد أو ينقص الوزن مع كل ضغطة', seg('step', [[1, '1'], [1.25, '1.25'], [2.5, '2.5'], [5, '5']], 'خطوة الوزن'))}
+    </section>
+    <section class="card settings">
+      <h2 class="set-h">البار والصفائح</h2>
+      ${sw('plates', 'حساب الصفائح', 'يقول لك كم صفيحة تحط على كل جهة في تمارين البار')}
+      ${row('وزن البار', 'البار الأولمبي 20 كجم، وبار السيدات 15', seg('bar', [[20, '20 كجم'], [15, '15 كجم'], [10, '10 كجم']], 'وزن البار'))}
+    </section>
+    <section class="card settings">
+      <h2 class="set-h">الأسبوع والمظهر</h2>
+      ${row('بداية الأسبوع', 'للجدول ولعدّ أيام النادي', seg('weekStart', [[6, 'السبت'], [0, 'الأحد'], [1, 'الاثنين']], 'بداية الأسبوع'))}
+      ${row('المظهر', 'تلقائي يمشي مع وضع الجوال', seg('theme', [['auto', 'تلقائي'], ['light', 'فاتح'], ['dark', 'داكن']], 'المظهر'))}
+    </section>
+    <p class="fine">الإعدادات تنحفظ مع نسختك الاحتياطية، وترجع لو ثبّت التطبيق من جديد.</p>
+    <button class="btn danger block" type="button" data-act="reset-prefs">رجّع الإعدادات الافتراضية</button>`;
+  return { title: 'الإعدادات', subtitle: 'الراحة، والبار، والمظهر', html: h, back: true };
+}
+
 function coachLine(s, dn) {
   if (!coachOn() || s.finishedAt || !s.items.length) return '';
   if (!UI.coach || UI.coach.sid !== s.id) UI.coach = { sid: s.id, text: pickLine(dn ? 'set' : 'start') };
@@ -859,6 +1003,7 @@ function screenSession(s, inline) {
   let h = `<div class="wk-top">
     <div class="wk-top-row"><h2>${esc(s.name)}</h2><span class="wk-count num">${dn} <small>من ${ofCnt(total, 'set')}</small></span></div>
     <div class="bar"><i style="width:${total ? Math.round((dn / total) * 100) : 0}%"></i></div>
+    ${restBox(s)}
     ${coachLine(s, dn)}
   </div>`;
   if (!s.items.length) h += '<p class="empty">ما فيه تمارين للحين. أضف أول تمرين.</p>';
@@ -889,13 +1034,13 @@ function screenPlan() {
   const rts = routines();
   const tdow = new Date().getDay();
   const opts = (sel) => '<option value="">راحة</option>' + rts.map((r) => `<option value="${r.id}" ${r.id === sel ? 'selected' : ''}>${esc(r.name)}</option>`).join('');
-  let h = `<div class="sec-title"><h2>جدول الأسبوع</h2><span>يبدأ السبت</span></div>
+  let h = `<div class="sec-title"><h2>جدول الأسبوع</h2><span>يبدأ ${DAY_NAME[prefs().weekStart]}</span></div>
     <section class="card"><ul class="week-plan">
-      ${DAY_ORDER.map((d) => `<li class="${d === tdow ? 'today' : ''}"><label class="dname" for="day-${d}">${DAY_NAME[d]}</label><select class="field" id="day-${d}" data-f="day" data-day="${d}">${opts(sch && sch.days[d])}</select></li>`).join('')}
+      ${dayOrder().map((d) => `<li class="${d === tdow ? 'today' : ''}"><label class="dname" for="day-${d}">${DAY_NAME[d]}</label><select class="field" id="day-${d}" data-f="day" data-day="${d}">${opts(sch && sch.days[d])}</select></li>`).join('')}
     </ul></section>`;
   h += `<div class="sec-title"><h2>التمارين اليومية</h2><span>${rts.length}</span></div>`;
   h += rts.length ? rts.map((r) => {
-    const days = DAY_ORDER.filter((d) => sch && sch.days[d] === r.id).map((d) => DAY_NAME[d]).join('، ');
+    const days = dayOrder().filter((d) => sch && sch.days[d] === r.id).map((d) => DAY_NAME[d]).join('، ');
     return `<button class="card routine-card" type="button" data-act="edit-routine" data-rt="${r.id}">
       <h3>${esc(r.name)}</h3>
       <p>${cnt(r.items.length, 'ex')} · ${cnt(routineSets(r), 'set')}${days ? ' · ' + days : ''}</p>
@@ -1147,10 +1292,7 @@ function syncCard() {
 }
 function screenLog() {
   let h = syncCard();
-  h += `<section class="card">
-    <div class="sec-title flush"><h2>الإعدادات</h2></div>
-    <label class="check-line" for="pref-coach"><input type="checkbox" id="pref-coach" data-f="pref-coach" ${coachOn() ? 'checked' : ''}> جمل تحفيزية وقت التمرين</label>
-  </section>`;
+  h += '<button class="choice" type="button" data-act="open-settings"><span>الإعدادات</span><span>مؤقت الراحة، البار، المظهر…</span></button>';
   const list = sessionsDesc();
   const prs = prsBySession();
   h += `<div class="sec-title"><h2>التمارين السابقة</h2><span>${list.length}</span></div>`;
@@ -1176,7 +1318,7 @@ function screenLog() {
 
 const SCREENS = {
   setup: screenSetup, today: screenToday, plan: screenPlan, progress: screenProgress, log: screenLog,
-  session: screenSessionPushed, routine: screenRoutine, pick: screenPick, newex: screenNewEx,
+  session: screenSessionPushed, routine: screenRoutine, pick: screenPick, newex: screenNewEx, settings: screenSettings,
 };
 
 /* ============================== actions ============================== */
@@ -1209,8 +1351,8 @@ const actions = {
   start: (b) => startSession(b.dataset.rt),
   'open-session': (b) => { UI.sessionId = b.dataset.sid; push('session'); },
 
-  'w+': (b) => stepWeight(b, 2.5),
-  'w-': (b) => stepWeight(b, -2.5),
+  'w+': (b) => stepWeight(b, prefs().step),
+  'w-': (b) => stepWeight(b, -prefs().step),
   toggle: (b) => {
     const s = curSession(); if (!s) return;
     const it = s.items[+b.dataset.i], x = it && it.sets[+b.dataset.j];
@@ -1225,6 +1367,7 @@ const actions = {
         UI.coach = { sid: s.id, text: line.text };
         if (line.pr) toast(line.text);
       }
+      startRest(s);
     }
     save(s);
     render();
@@ -1261,6 +1404,7 @@ const actions = {
   finish: () => {
     const s = curSession(); if (!s) return;
     flushPending();
+    UI.rest = null;
     s.finishedAt = Date.now();
     save(s);
     Sync.run();
@@ -1369,6 +1513,22 @@ const actions = {
   },
   export: () => exportBackup(),
   import: () => $('#import-file').click(),
+
+  'open-settings': () => push('settings'),
+  pref: (b) => {
+    const k = b.dataset.k;
+    setPref(k, k === 'theme' ? b.dataset.v : Number(b.dataset.v));
+    render();
+  },
+  'reset-prefs': (b) => {
+    if (!armed(b, 'متأكد؟ اضغط مرة ثانية')) return;
+    const r = R.get('prefs');
+    if (r) { r.values = {}; save(r); }
+    applyTheme();
+    render();
+    toast('رجعت الإعدادات الافتراضية');
+  },
+  'rest-skip': () => { UI.rest = null; tickRest(); },
 };
 function stepWeight(b, d) {
   const s = curSession(); if (!s) return;
@@ -1436,9 +1596,9 @@ main.addEventListener('change', (e) => {
   } else if (el.dataset.f === 'prog-ex') {
     UI.progEx = el.value;
     render();
-  } else if (el.dataset.f === 'pref-coach') {
-    setMeta('prefs', Object.assign({}, meta.prefs, { coach: el.checked }));
-    toast(el.checked ? 'بتطلع لك جمل تحفيزية وقت التمرين' : 'وقّفنا الجمل التحفيزية');
+  } else if (el.dataset.pref) {
+    setPref(el.dataset.pref, el.checked);
+    render();
   }
 });
 main.addEventListener('focusout', () => {
@@ -1446,6 +1606,7 @@ main.addEventListener('focusout', () => {
 });
 $('#back').addEventListener('click', back);
 $('#syncDot').addEventListener('click', () => go('log'));
+$('#gear').addEventListener('click', () => push('settings'));
 $('#tabs').addEventListener('click', (e) => {
   const b = e.target.closest('[data-tab]');
   if (b) { if (UI.screen === 'routine') commitDraft(true); go(b.dataset.tab); }
@@ -1462,6 +1623,7 @@ document.addEventListener('visibilitychange', () => {
     else if (outbox.size && !activeToday()) Sync.run();
     safeRender();
   }
+  syncWakeLock();
 });
 setInterval(renderSyncState, 60000);
 
@@ -1472,6 +1634,8 @@ async function boot() {
     Sync.conf = { url: meta.sync.url, key: meta.sync.key };
     Sync.lastPull = meta.sync.lastPull || 0;
   }
+  if (meta.prefs && meta.prefs.coach === false && !R.get('prefs')) setPref('coach', false);
+  applyTheme();
   UI.screen = meta.setup || storageBroken ? 'today' : 'setup';
   render();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
