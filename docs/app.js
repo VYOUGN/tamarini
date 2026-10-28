@@ -274,7 +274,7 @@ const SIDES = [['R', 'يمين'], ['L', 'يسار']];
 const measure = (key, name, unit, sided) => ({ key, name, unit, fields: sided ? SIDES.map(([s, side]) => [key + s, side]) : [[key, '']] });
 const MEASURES = [
   measure('neck', 'الرقبة', 'سم'), measure('chest', 'الصدر', 'سم'), measure('waist', 'الخصر', 'سم'), measure('fat', 'نسبة الدهون', '%'),
-  measure('bicep', 'العضد', 'سم', 1), measure('forearm', 'الساعد', 'سم', 1), measure('thigh', 'الفخذ', 'سم', 1), measure('calf', 'بطن الساق', 'سم', 1),
+  measure('bicep', 'العضد', 'سم', 1), measure('forearm', 'الساعد', 'سم', 1), measure('thigh', 'الفخذ', 'سم', 1), measure('calf', 'البطه', 'سم', 1),
 ];
 // Before right and left were split, the arm and the thigh were one number each. Still shown, no longer asked for.
 const OLD_MEASURES = [
