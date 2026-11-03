@@ -16,6 +16,11 @@ function toNum(v) {
   const n = parseFloat(s);
   return Number.isFinite(n) && n >= 0 ? n : 0;
 }
+// Bodyweight lifts also take a minus: the weight an assisted machine takes off.
+function toSigned(v) {
+  const s = String(v == null ? '' : v).trim().replace(/^[−–]/, '-');
+  return s[0] === '-' ? -toNum(s.slice(1)) || 0 : toNum(s.replace(/^\+/, ''));
+}
 const round2 = (n) => Math.round(n * 100) / 100;
 const round1 = (n) => Math.round(n * 10) / 10;
 const w2s = (n) => (n ? String(round2(n)) : '');
@@ -170,7 +175,10 @@ function sane(r) {
   if (!r || typeof r.id !== 'string' || typeof r.type !== 'string') return null;
   if (r.type === 'session') {
     r.items = Array.isArray(r.items) ? r.items.filter((it) => it && it.ex) : [];
-    for (const it of r.items) it.sets = Array.isArray(it.sets) ? it.sets.map((x) => ({ w: toNum(x && x.w), r: Math.round(toNum(x && x.r)), done: !!(x && x.done) })) : [];
+    for (const it of r.items) {
+      it.sets = Array.isArray(it.sets) ? it.sets.map((x) => ({ w: toSigned(x && x.w), r: Math.round(toNum(x && x.r)), done: !!(x && x.done) })) : [];
+      if (it.note != null) it.note = String(it.note).slice(0, 500);
+    }
     if (typeof r.date !== 'string') return r.deleted ? r : null;
   }
   if (r.type === 'routine') r.items = Array.isArray(r.items) ? r.items.filter((it) => it && it.ex) : [];
@@ -255,7 +263,7 @@ const sessions = () => [...R.values()].filter((r) => r.type === 'session' && liv
 const sessionsDesc = () => sessions().sort((a, b) => (a.date === b.date ? (b.startedAt || 0) - (a.startedAt || 0) : a.date < b.date ? 1 : -1));
 const doneSets = (s) => s.items.reduce((a, it) => a + it.sets.filter((x) => x.done).length, 0);
 const totalSets = (s) => s.items.reduce((a, it) => a + it.sets.length, 0);
-const volume = (s) => s.items.reduce((a, it) => a + it.sets.reduce((b, x) => b + (x.done ? (x.w || 0) * (x.r || 0) : 0), 0), 0);
+const volume = (s) => s.items.reduce((a, it) => a + it.sets.reduce((b, x) => b + (x.done ? Math.max(0, x.w || 0) * (x.r || 0) : 0), 0), 0);
 const routineSets = (r) => r.items.reduce((a, it) => a + (it.sets || 0), 0);
 function trainedDates() {
   const set = new Set();
@@ -346,12 +354,15 @@ function applyTheme() {
   try { if (fixed) localStorage.setItem('tamarini-theme', t); else localStorage.removeItem('tamarini-theme'); } catch (e) {}
 }
 
-// Bodyweight exercises: the weight typed is what's added on top of the body (0 = body only). A set beats
-// another with more added weight, or the same added weight and more reps. Other exercises compare weight.
+// Bodyweight exercises: the weight typed is what's added on top of the body, or with a minus what an assisted
+// machine takes off (0 = body only). A set beats another with more weight (less help), or the same and more
+// reps. Other exercises compare weight.
 const isBw = (exId) => !!exInfo(exId).bw;
 const beats = (a, b, bw) => a.w > b.w || (bw && a.w === b.w && a.r > b.r);
-// How a finished set reads: 60×8, or for bodyweight 8 (reps) and +10×6 (6 reps with 10 kg added).
-const setTxt = (x, bw) => (bw ? (x.w ? `+${w2s(x.w)}×${x.r}` : String(x.r)) : `${w2s(x.w) || 0}×${x.r}`);
+const bw2s = (n) => (n > 0 ? `+${round2(n)}` : n < 0 ? `−${round2(-n)}` : '');
+const extraTxt = (w) => (w > 0 ? `+${round2(w)} كجم` : w < 0 ? `مساعدة ${round2(-w)} كجم` : 'بوزن جسمك بس');
+// How a finished set reads: 60×8, or for bodyweight 8 (reps), +10×6 (10 kg added) and −20×6 (20 kg of help).
+const setTxt = (x, bw) => (bw ? (x.w ? `${bw2s(x.w)}×${x.r}` : String(x.r)) : `${w2s(x.w) || 0}×${x.r}`);
 // A row of sets for an Arabic line: first set on the right, each one kept left-to-right inside.
 const setsHTML = (sets, bw) => sets.map((x) => `<bdi dir="ltr">${setTxt(x, bw)}</bdi>`).join(' · ');
 
@@ -365,6 +376,15 @@ function lastSetsFor(exId, ref) {
   }
   return null;
 }
+// The newest note on this exercise from an earlier workout, however long ago.
+function lastNoteFor(exId, ref) {
+  for (const s of sessionsDesc()) {
+    if (!isBefore(s, ref)) continue;
+    const it = s.items.find((i) => i.ex === exId && i.note && i.note.trim());
+    if (it) return { date: s.date, note: it.note.trim() };
+  }
+  return null;
+}
 function history(exId) {
   const out = [];
   for (const s of sessionsDesc().reverse()) {
@@ -374,7 +394,7 @@ function history(exId) {
       if (!d.length) continue;
       const top = d.reduce((a, b) => (b.w > a.w || (b.w === a.w && b.r > a.r) ? b : a));
       out.push({
-        date: s.date, sid: s.id, top, sets: d,
+        date: s.date, sid: s.id, top, sets: d, note: (it.note || '').trim(),
         e1: Math.max(...d.map((x) => est1rm(x.w, x.r))),
         reps: Math.max(...d.map((x) => x.r)),
       });
@@ -411,7 +431,7 @@ function prsBySession() {
 function prText(p) {
   if (!isBw(p.ex)) return `${round2(p.top.w)} كجم، كان ${round2(p.prev.w)}`;
   if (p.top.w === p.prev.w) return `${cnt(p.top.r, 'rep')}، كان ${p.prev.r}`;
-  return `+${round2(p.top.w)} كجم، كان ${p.prev.w ? '+' + round2(p.prev.w) : 'بدون وزن زايد'}`;
+  return `${extraTxt(p.top.w)}، كان ${extraTxt(p.prev.w)}`;
 }
 
 // Plates per side for the bar weight in settings, IWF colors.
@@ -485,6 +505,12 @@ const COACH = {
     '{r} في {ex}! أكثر من أي مرة قبل 💪',
     'كسرت رقمك في {ex}: {r}!',
   ],
+  // An assisted bodyweight lift with less help than ever: {a} is «مساعدة 15 كجم» or «بوزن جسمك بس».
+  prHelp: [
+    'رقم جديد في {ex}: {a} 🔥',
+    'مساعدة أقل من أي مرة في {ex}: {a} 💪',
+    'جسمك يقوى! {ex}: {a}',
+  ],
   allDone: [
     'خلّصت كل الجولات! اضغط «إنهاء التمرين» تحت',
     'كل الجولات خلصت 💪 اضغط «إنهاء التمرين» وارتاح',
@@ -499,7 +525,7 @@ function pickLine(kind, vars = {}) {
   recentLines.push(t);
   if (recentLines.length > 6) recentLines.shift();
   return t.replace(/\{ex\}/g, vars.ex || '').replace(/\{w\}/g, vars.w == null ? '' : String(round2(vars.w)))
-    .replace(/\{r\}/g, vars.r == null ? '' : cnt(vars.r, 'rep'));
+    .replace(/\{r\}/g, vars.r == null ? '' : cnt(vars.r, 'rep')).replace(/\{a\}/g, vars.a || '');
 }
 // The best finished set for this exercise in the workouts before `ref` (null if none).
 function bestBefore(exId, ref) {
@@ -522,7 +548,9 @@ function lineAfterSet(s, i, j) {
   if (prev && x.r > 0 && bestToday && (bw ? beats(x, prev, true) : prev.w > 0 && x.w > prev.w)) {
     // Same added weight as the best so far (earlier today included) means the record is in reps.
     const bestSoFar = it.sets.reduce((b, o, k) => (k !== j && o.done && beats(o, b, bw) ? o : b), prev);
-    const text = bw && x.w === bestSoFar.w ? pickLine('prReps', { ex: name, r: x.r }) : pickLine('pr', { ex: name, w: x.w });
+    const text = bw && x.w === bestSoFar.w ? pickLine('prReps', { ex: name, r: x.r })
+      : bw && x.w <= 0 ? pickLine('prHelp', { ex: name, a: extraTxt(x.w) })
+      : pickLine('pr', { ex: name, w: x.w });
     return { text, pr: true };
   }
   if (dn === total) return { text: pickLine('allDone') };
@@ -772,7 +800,7 @@ async function importBackup(file) {
 const UI = {
   tab: 'today', screen: 'today', stack: [],
   sessionId: null, draft: null, pickFor: null, pickQuery: '', newExFor: null,
-  progEx: null, progRange: 90, linkEdit: false, dirtyRender: false, coach: null, linkDraft: '', rest: null,
+  progEx: null, progRange: 90, progMetric: 'load', linkEdit: false, dirtyRender: false, coach: null, linkDraft: '', rest: null,
   bodyRange: 90, bodyDate: null, bodyMore: false, bodyProfile: false, bodyMeasure: null, bodyAll: false,
   bodyDraft: null, // { date, vals } typed into the body form but not saved yet, so a re-render keeps it
 };
@@ -952,13 +980,14 @@ function exCard(s, it, i) {
   const lastTxt = last
     ? `آخر مرة، ${fmt(F.dm, last.date)}${bw ? '، وزن الجسم' : ''}: <span class="num">${setsHTML(last.sets, bw)}</span>`
     : 'أول مرة تسجّل هذا التمرين';
+  const prevNote = lastNoteFor(it.ex, s);
   const cur = it.sets.find((x) => !x.done) || it.sets[it.sets.length - 1];
   const rows = it.sets.map((x, j) => `
     <div class="set-row ${x.done ? 'done' : ''}">
       <span class="n num">${j + 1}</span>
       <div class="stepper">
         <button type="button" data-act="w+" data-i="${i}" data-j="${j}" aria-label="زِد وزن الجولة ${j + 1} ${prefs().step} كجم">+</button>
-        <input class="field${bw ? ' bw' : ''}" data-f="w" data-i="${i}" data-j="${j}" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="${w2s(x.w)}" placeholder="${bw ? 'وزن الجسم' : '0'}" aria-label="${bw ? 'الوزن الزايد في الجولة' : 'وزن الجولة'} ${j + 1} بالكيلو">
+        <input class="field${bw ? ' bw' : ''}" data-f="w" data-i="${i}" data-j="${j}" dir="ltr" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="${bw ? bw2s(x.w) : w2s(x.w)}" placeholder="${bw ? 'وزن الجسم' : '0'}" aria-label="${bw ? 'الوزن الزايد، أو المساعدة بالسالب، في الجولة' : 'وزن الجولة'} ${j + 1} بالكيلو">
         <button type="button" data-act="w-" data-i="${i}" data-j="${j}" aria-label="نقّص وزن الجولة ${j + 1} ${prefs().step} كجم">−</button>
       </div>
       <div class="stepper">
@@ -975,13 +1004,17 @@ function exCard(s, it, i) {
       <span class="count num">${dn} / ${it.sets.length}</span>
     </div>
     <p class="last">${lastTxt}</p>
+    ${prevNote ? `<p class="ex-note"><b>ملاحظتك، ${fmt(F.dm, prevNote.date)}:</b> ${esc(prevNote.note)}</p>` : ''}
     <div class="sets">
-      ${it.sets.length ? '<div class="set-row set-head"><span>#</span><span>' + (bw ? 'وزن زايد (كجم)' : 'الوزن (كجم)') + '</span><span>العدّات</span><span></span></div>' : ''}
+      ${it.sets.length ? '<div class="set-row set-head"><span>#</span><span>' + (bw ? '+ زايد / − مساعدة' : 'الوزن (كجم)') + '</span><span>العدّات</span><span></span></div>' : ''}
       ${rows}
     </div>
     <p class="plates" data-plates="${i}">${info.bar && cur ? platesHTML(cur.w) : ''}</p>
+    <label class="note-box" id="note-${i}" ${it.note ? '' : 'hidden'}><span>ملاحظة تطلع لك المرة الجاية</span>
+      <textarea class="field note-field" data-f="note" data-i="${i}" rows="2" maxlength="500" placeholder="مثلًا: الكرسي على رقم 4، أو جرّب قبضة أعرض">${esc(it.note || '')}</textarea></label>
     <div class="card-actions">
       <button class="link" type="button" data-act="add-set" data-i="${i}">+ جولة</button>
+      ${it.note ? '' : `<button class="link" type="button" data-act="note" data-i="${i}">+ ملاحظة</button>`}
       ${it.sets.length ? `<button class="link del" type="button" data-act="del-set" data-i="${i}">حذف آخر جولة</button>` : ''}
       <button class="link del" type="button" data-act="remove-ex" data-i="${i}">شيل التمرين</button>
     </div>
@@ -1225,7 +1258,7 @@ function screenRoutine() {
     <div class="rt-fields">
       <label>الجولات<input class="field" data-f="rt-sets" data-i="${i}" inputmode="numeric" value="${it.sets || ''}" autocomplete="off"></label>
       <label>العدّات<input class="field" data-f="rt-reps" data-i="${i}" inputmode="numeric" value="${it.reps || ''}" autocomplete="off"></label>
-      <label>الوزن (كجم)<input class="field" data-f="rt-weight" data-i="${i}" inputmode="decimal" value="${w2s(it.weight)}" placeholder="${exInfo(it.ex).bw ? 'وزن الجسم' : '–'}" autocomplete="off"></label>
+      <label>الوزن (كجم)<input class="field" data-f="rt-weight" data-i="${i}" dir="ltr" inputmode="decimal" value="${exInfo(it.ex).bw ? bw2s(it.weight) : w2s(it.weight)}" placeholder="${exInfo(it.ex).bw ? 'وزن الجسم' : '–'}" autocomplete="off"></label>
     </div>
   </li>`).join('')}</ol>`;
   if (!d.items.length) h += '<p class="empty">أضف التمارين اللي تسويها في هذا اليوم.</p>';
@@ -1307,10 +1340,11 @@ function lineChart(pts, label, goal = 0, pair = false) {
   const { lo, hi, step } = niceRange(Math.min(...yv), Math.max(...yv));
   const sx = (x) => (x1 === x0 ? L + iw / 2 : L + ((x - x0) / (x1 - x0)) * iw);
   const sy = (y) => T + (1 - (y - lo) / (hi - lo)) * ih;
+  const num = (v) => String(round2(v)).replace('-', '−'); // an assisted lift goes below 0
   let g = '';
   for (let v = lo; v <= hi + 1e-9; v += step) {
     const y = sy(v).toFixed(1);
-    g += `<line class="grid" x1="${L}" x2="${W - RR}" y1="${y}" y2="${y}"/><text x="${L - 6}" y="${(+y + 3.5).toFixed(1)}" text-anchor="end">${round2(v)}</text>`;
+    g += `<line class="grid" x1="${L}" x2="${W - RR}" y1="${y}" y2="${y}"/><text x="${L - 6}" y="${(+y + 3.5).toFixed(1)}" text-anchor="end">${num(v)}</text>`;
   }
   if (goal) {
     const gy = sy(goal).toFixed(1);
@@ -1328,7 +1362,7 @@ function lineChart(pts, label, goal = 0, pair = false) {
   if (x1 !== x0) xl += `<text x="${sx(x1).toFixed(1)}" y="${H - 6}" text-anchor="end">${fmt(F.dm, x1)}</text>`;
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(label)}">
     ${g}${area ? `<path class="area" d="${area}"/>` : ''}<path class="${pair ? 'l1 b' : 'l2'}" d="${line('y2')}"/><path class="l1" d="${line('y')}"/>${dots}
-    <text class="end" x="${endX.toFixed(1)}" y="${endY.toFixed(1)}" text-anchor="end">${round2(lastP.y)}</text>${xl}
+    <text class="end" x="${endX.toFixed(1)}" y="${endY.toFixed(1)}" text-anchor="end">${num(lastP.y)}</text>${xl}
   </svg>`;
 }
 function attendanceCard() {
@@ -1491,15 +1525,8 @@ function bodyHistCard() {
 }
 // Under the lift's numbers: the best lift as a multiple of body weight, or a bodyweight move's total load.
 function strengthLine(all, bw) {
-  if (!weighIns().length) return `<p class="fine" style="margin-top:8px">سجّل وزن جسمك فوق، ويطلع لك هنا ${bw ? 'الحمل الكلي مع وزن جسمك' : 'كم مرة ترفع من وزن جسمك'}.</p>`;
-  if (bw) {
-    let best = null;
-    for (const x of all) {
-      const b = bodyKgOn(x.date).kg;
-      for (const s of x.sets) if (!best || b + s.w > best.tot || (b + s.w === best.tot && s.r > best.r)) best = { tot: b + s.w, b, w: s.w, r: s.r };
-    }
-    return `<p class="fine" style="margin-top:8px">أثقل جولة بالحمل الكلي: <bdi dir="ltr">${round1(best.tot)} × ${best.r}</bdi> (جسمك ${round1(best.b)} كجم${best.w ? ` + ${round2(best.w)} زايد` : '، بدون وزن زايد'}).</p>`;
-  }
+  if (!weighIns().length) return `<p class="fine" style="margin-top:8px">سجّل وزن جسمك فوق، ويطلع لك هنا ${bw ? 'الحمل الكلي: وزن جسمك مع الزايد أو ناقص المساعدة' : 'كم مرة ترفع من وزن جسمك'}.</p>`;
+  if (bw) return ''; // the stats above already show the total load
   let x = all[0];
   for (const y of all) if (y.top.w >= x.top.w) x = y;
   if (!x.top.w) return '';
@@ -1525,38 +1552,54 @@ function screenProgress() {
   let hs = all.filter((x) => x.date >= from);
   if (!hs.length) hs = all.slice(-1);
   const bw = isBw(exId);
-  const byReps = all.every((x) => !x.top.w);
-  const best = Math.max(...all.map((x) => (byReps ? x.reps : x.top.w)));
+  // A bodyweight lift with a weigh-in shows its total load: the body that day plus what's added, or minus the
+  // machine's help. «العدّات» switches it to reps. Without a weigh-in it shows the added weight, or reps if none.
+  const hasBody = bw && weighIns().length > 0;
+  const byReps = hasBody ? UI.progMetric === 'reps' : all.every((x) => !x.top.w);
+  const load = hasBody && !byReps;
+  if (load) for (const x of all) { x.body = round1(bodyKgOn(x.date).kg); x.load = round1(x.body + x.top.w); }
+  const val = (x) => (byReps ? x.reps : load ? x.load : x.top.w);
+  const bestX = all.reduce((a, x) => (val(x) >= val(a) ? x : a));
+  const best = val(bestX);
   const maxReps = Math.max(...all.map((x) => x.reps));
-  const lineName = byReps ? 'أكثر عدّات' : bw ? 'أعلى وزن زايد' : 'أعلى وزن';
+  const helped = bw && all.some((x) => x.top.w < 0);
+  const lineName = byReps ? 'أكثر عدّات' : load ? 'الحمل الكلي' : bw ? (helped ? 'الزايد، والمساعدة بالسالب' : 'أعلى وزن زايد') : 'أعلى وزن';
+  const bestName = byReps ? 'أكثر عدّات' : load ? 'أعلى حمل كلي' : bw ? (best < 0 ? 'أقل مساعدة' : 'أعلى وزن زايد') : 'أعلى وزن';
   const bestE1 = Math.max(...all.map((x) => x.e1));
   const last = all[all.length - 1];
   const first = hs[0];
-  const delta = byReps ? last.reps - first.reps : round2(last.top.w - first.top.w);
+  const delta = round2(val(last) - val(first));
   // The word after a number: 3–10 take the plural (8 عدّات), the rest the singular (12 عدّة).
   const repWord = (n) => (Math.abs(n) % 100 >= 3 && Math.abs(n) % 100 <= 10 ? 'عدّات' : 'عدّة');
   const unitFor = (n) => (byReps ? repWord(n) : 'كجم');
-  const pts = hs.map((x) => ({ x: dateOf(x.date).getTime(), y: byReps ? x.reps : x.top.w, y2: byReps || bw ? null : round1(x.e1), pr: x.pr }));
+  const numFor = (n) => (byReps || load || !bw ? round2(n) : bw2s(n) || '0');
+  // Under a total load: what it was made of that day.
+  const parts = (x) => `<small>جسمك ${x.body} كجم${x.top.w > 0 ? ` + ${round2(x.top.w)} زايد` : x.top.w < 0 ? ` − ${round2(-x.top.w)} مساعدة` : ''}</small>`;
+  const pts = hs.map((x) => ({ x: dateOf(x.date).getTime(), y: val(x), y2: load ? x.body : byReps || bw ? null : round1(x.e1), pr: x.pr }));
+  const hint = !bw ? '' : hasBody ? 'تمرين بوزن الجسم: الحمل الكلي هو وزن جسمك يومها، مع الوزن الزايد أو ناقص مساعدة الجهاز.'
+    : 'تمرين بوزن الجسم: الرقم لحاله عدد العدّات، و«+» وزن زايد فوق وزن جسمك، و«−» مساعدة الجهاز.';
   h += `<div class="sec-title"><h2>تقدّم الأوزان</h2></div>
   <section class="card">
     <label class="form"><span class="sr">التمرين</span><select class="field" id="prog-ex" data-f="prog-ex" aria-label="اختر التمرين">${withData.map((w) => `<option value="${w.e.id}" ${w.e.id === exId ? 'selected' : ''}>${esc(w.e.name)}</option>`).join('')}</select></label>
-    ${bw ? '<p class="fine" style="margin-top:8px">تمرين بوزن الجسم: الرقم لحاله عدد العدّات، و«+» يعني وزن زايد فوق وزن جسمك.</p>' : ''}
+    ${hasBody ? `<div class="seg" role="group" aria-label="وش يعرض" style="margin-top:12px">${[['load', 'الحمل الكلي'], ['reps', 'العدّات']].map(([m, l]) => `<button type="button" data-act="prog-metric" data-m="${m}" aria-pressed="${(m === 'reps') === byReps}">${l}</button>`).join('')}</div>` : ''}
+    ${hint ? `<p class="fine" style="margin-top:8px">${hint}</p>` : ''}
     <div class="stats" style="margin-top:12px">
-      <div class="stat"><span>${lineName}</span><b dir="ltr">${bw && !byReps ? '+' : ''}${round2(best)} <small>${unitFor(best)}</small></b></div>
+      <div class="stat"><span>${bestName}</span><b dir="ltr">${bestName === 'أقل مساعدة' ? round2(-best) : numFor(best)} <small>${unitFor(best)}</small></b>${load ? parts(bestX) : ''}</div>
       ${byReps ? `<div class="stat"><span>آخر مرة</span><b>${last.reps} <small>${repWord(last.reps)}</small></b></div>`
         : bw ? `<div class="stat"><span>أكثر عدّات</span><b>${maxReps} <small>${repWord(maxReps)}</small></b></div>`
         : `<div class="stat"><span>أقصى وزن لعدّة وحدة (تقدير)</span><b>${Math.round(bestE1)} <small>كجم</small></b></div>`}
-      <div class="stat"><span>آخر مرة</span><b dir="ltr" class="num">${byReps ? last.reps : setTxt(last.top, bw)}</b></div>
-      <div class="stat"><span>التغيّر في الفترة</span><b class="${delta > 0 ? 'up' : ''}" dir="ltr">${delta > 0 ? '+' : ''}${delta} <small>${unitFor(delta)}</small></b></div>
+      ${byReps ? `<div class="stat"><span>عدد الجلسات</span><b>${all.length}</b></div>`
+        : `<div class="stat"><span>آخر مرة</span><b dir="ltr" class="num">${load ? `${last.load}×${last.top.r}` : setTxt(last.top, bw)}</b>${load ? parts(last) : ''}</div>`}
+      <div class="stat"><span>التغيّر في الفترة</span><b class="${delta > 0 ? 'up' : ''}" dir="ltr">${delta > 0 ? '+' : delta < 0 ? '−' : ''}${Math.abs(delta)} <small>${unitFor(delta)}</small></b></div>
     </div>
     ${strengthLine(all, bw)}
     <div class="seg" role="group" aria-label="الفترة" style="margin-top:14px">${RANGES.map(([r, l]) => `<button type="button" data-act="range" data-r="${r}" aria-pressed="${UI.progRange === r}">${l}</button>`).join('')}</div>
     ${lineChart(pts, `${exInfo(exId).name}: ${lineName} في كل تمرين`)}
-    <div class="legend"><span><i></i>${lineName}</span>${byReps || bw ? '' : '<span><i class="d"></i>أقصى وزن تقديري لعدّة وحدة</span>'}<span><i class="p"></i>رقم جديد</span></div>
+    <div class="legend"><span><i></i>${lineName}</span>${load ? '<span><i class="d"></i>وزن جسمك يومها</span>' : byReps || bw ? '' : '<span><i class="d"></i>أقصى وزن تقديري لعدّة وحدة</span>'}<span><i class="p"></i>رقم جديد</span></div>
   </section>
   <section class="card">
     <div class="sec-title flush"><h2>آخر الجلسات</h2><span>${cnt(all.length, 'sess')}</span></div>
-    <ul class="hist">${all.slice(-10).reverse().map((x) => `<li><span>${fmt(F.dm, x.date)} ${x.pr ? '<span class="pr-chip">رقم جديد</span>' : ''}</span><span class="sets-txt">${setsHTML(x.sets, bw)}</span></li>`).join('')}</ul>
+    <ul class="hist">${all.slice(-10).reverse().map((x) => `<li${x.note ? ' class="has-note"' : ''}><span>${fmt(F.dm, x.date)} ${x.pr ? '<span class="pr-chip">رقم جديد</span>' : ''}</span><span class="sets-txt">${setsHTML(x.sets, bw)}</span>${x.note ? `<p class="hist-note">${esc(x.note)}</p>` : ''}</li>`).join('')}</ul>
   </section>`;
   return { title: 'التقدّم', subtitle: 'جسمك وأوزانك وأيام النادي', html: h, tabs: true };
 }
@@ -1778,6 +1821,15 @@ const actions = {
   },
 
   range: (b) => { UI.progRange = +b.dataset.r; render(); },
+  'prog-metric': (b) => { UI.progMetric = b.dataset.m; render(); },
+  // Opened in place (no render), so a weight or reps being typed on the card stays.
+  note: (b) => {
+    const box = $(`#note-${b.dataset.i}`);
+    if (!box) return;
+    box.hidden = false;
+    b.hidden = true;
+    box.querySelector('textarea').focus();
+  },
 
   'body-save': () => {
     const t = todayKey(), dEl = $('#body-date');
@@ -1893,9 +1945,11 @@ function stepSet(b) {
   const x = s.items[i] && s.items[i].sets[j];
   if (!x) return null;
   const d = (b.dataset.act[1] === '+' ? 1 : -1) * (f === 'w' ? prefs().step : 1);
-  x[f] = Math.max(0, round2((x[f] || 0) + d));
+  // On a bodyweight lift − keeps going below 0, into the machine's help.
+  const bw = f === 'w' && isBw(s.items[i].ex);
+  x[f] = Math.max(bw ? -500 : 0, round2((x[f] || 0) + d));
   const el = main.querySelector(`input[data-f="${f}"][data-i="${i}"][data-j="${j}"]`);
-  if (el) el.value = f === 'w' ? w2s(x.w) : x.r || '';
+  if (el) el.value = f === 'w' ? (bw ? bw2s(x.w) : w2s(x.w)) : x.r || '';
   if (f === 'w') updatePlates(s, i);
   return s;
 }
@@ -1973,15 +2027,21 @@ main.addEventListener('input', (e) => {
     const s = curSession();
     const x = s && s.items[i] && s.items[i].sets[j];
     if (!x) return;
-    x[f] = f === 'w' ? toNum(el.value) : Math.round(toNum(el.value));
+    x[f] = f === 'w' ? (isBw(s.items[i].ex) ? toSigned(el.value) : toNum(el.value)) : Math.round(toNum(el.value));
     save(s, { soon: true });
     if (f === 'w') updatePlates(s, i);
+  } else if (f === 'note') {
+    const s = curSession();
+    const it = s && s.items[i];
+    if (!it) return;
+    it.note = el.value.slice(0, 500);
+    save(s, { soon: true });
   } else if (f === 'rt-name') {
     UI.draft.name = el.value; UI.draft.changed = true;
   } else if (f === 'rt-sets' || f === 'rt-reps' || f === 'rt-weight') {
     const it = UI.draft.items[i]; if (!it) return;
     const k = f.slice(3);
-    it[k] = k === 'weight' ? toNum(el.value) : Math.round(toNum(el.value));
+    it[k] = k === 'weight' ? (exInfo(it.ex).bw ? toSigned(el.value) : toNum(el.value)) : Math.round(toNum(el.value));
     UI.draft.changed = true;
   } else if (f === 'link') {
     UI.linkDraft = el.value;

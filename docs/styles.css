@@ -283,6 +283,11 @@ a.btn, a.back { text-decoration: none; }
 .ex-head .count { font-size: 0.85rem; font-weight: 700; white-space: nowrap; }
 .ex-card.complete .ex-head .count { color: var(--done); }
 .last { margin: 0; font-size: 0.85rem; color: var(--muted); }
+/* The note from last time, and the box for this time's. Notes are mostly Arabic; each line takes its own direction. */
+.ex-note { margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--accent-soft); font-size: 0.85rem; line-height: 1.6; unicode-bidi: plaintext; white-space: pre-line; }
+.ex-note b { color: var(--accent); }
+.note-box { display: grid; gap: 4px; font-size: 0.75rem; font-weight: 700; color: var(--muted); }
+textarea.field.note-field { min-height: 64px; direction: rtl; text-align: start; unicode-bidi: plaintext; word-break: normal; font-weight: 500; color: var(--ink); }
 
 .sets { display: grid; gap: 6px; }
 .set-row {
@@ -432,6 +437,8 @@ textarea.field { height: auto; min-height: 88px; padding: 10px 12px; font-size: 
 .bars-x { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px; margin-top: 6px; font-size: 0.68rem; color: var(--muted); text-align: center; }
 .hist { list-style: none; margin: 0; padding: 0; }
 .hist li { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); font-size: 0.9rem; }
+.hist li.has-note { display: grid; grid-template-columns: auto minmax(0, 1fr); row-gap: 4px; }
+.hist-note { grid-column: 1 / -1; margin: 0; font-size: 0.8rem; color: var(--muted); unicode-bidi: plaintext; white-space: pre-line; }
 .hist li:first-child { border-top: 0; }
 .hist .sets-txt { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; text-align: end; }
 
