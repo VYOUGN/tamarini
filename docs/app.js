@@ -393,9 +393,10 @@ function history(exId) {
       const d = it.sets.filter((x) => x.done && x.r > 0);
       if (!d.length) continue;
       const top = d.reduce((a, b) => (b.w > a.w || (b.w === a.w && b.r > a.r) ? b : a));
+      const e1Set = d.reduce((a, b) => (est1rm(b.w, b.r) > est1rm(a.w, a.r) ? b : a)); // the set the 1RM estimate comes from
       out.push({
         date: s.date, sid: s.id, top, sets: d, note: (it.note || '').trim(),
-        e1: Math.max(...d.map((x) => est1rm(x.w, x.r))),
+        e1: est1rm(e1Set.w, e1Set.r), e1Set,
         reps: Math.max(...d.map((x) => x.r)),
       });
     }
@@ -1565,7 +1566,8 @@ function screenProgress() {
   const helped = bw && all.some((x) => x.top.w < 0);
   const lineName = byReps ? 'أكثر عدّات' : load ? 'الحمل الكلي' : bw ? (helped ? 'الزايد، والمساعدة بالسالب' : 'أعلى وزن زايد') : 'أعلى وزن';
   const bestName = byReps ? 'أكثر عدّات' : load ? 'أعلى حمل كلي' : bw ? (best < 0 ? 'أقل مساعدة' : 'أعلى وزن زايد') : 'أعلى وزن';
-  const bestE1 = Math.max(...all.map((x) => x.e1));
+  const bestE1X = all.reduce((a, x) => (x.e1 > a.e1 ? x : a));
+  const bestE1 = bestE1X.e1;
   const last = all[all.length - 1];
   const first = hs[0];
   const delta = round2(val(last) - val(first));
@@ -1587,7 +1589,7 @@ function screenProgress() {
       <div class="stat"><span>${bestName}</span><b dir="ltr">${bestName === 'أقل مساعدة' ? round2(-best) : numFor(best)} <small>${unitFor(best)}</small></b>${load ? parts(bestX) : ''}</div>
       ${byReps ? `<div class="stat"><span>آخر مرة</span><b>${last.reps} <small>${repWord(last.reps)}</small></b></div>`
         : bw ? `<div class="stat"><span>أكثر عدّات</span><b>${maxReps} <small>${repWord(maxReps)}</small></b></div>`
-        : `<div class="stat"><span>أقصى وزن لعدّة وحدة (تقدير)</span><b>${Math.round(bestE1)} <small>كجم</small></b></div>`}
+        : `<div class="stat"><span>أقصى وزن لعدّة وحدة (تقدير)</span><b>${Math.round(bestE1)} <small>كجم</small></b><small>من <bdi dir="ltr">${setTxt(bestE1X.e1Set, false)}</bdi> · ${fmtDay(bestE1X.date)}</small></div>`}
       ${byReps ? `<div class="stat"><span>عدد الجلسات</span><b>${all.length}</b></div>`
         : `<div class="stat"><span>آخر مرة</span><b dir="ltr" class="num">${load ? `${last.load}×${last.top.r}` : setTxt(last.top, bw)}</b>${load ? parts(last) : ''}</div>`}
       <div class="stat"><span>التغيّر في الفترة</span><b class="${delta > 0 ? 'up' : ''}" dir="ltr">${delta > 0 ? '+' : delta < 0 ? '−' : ''}${Math.abs(delta)} <small>${unitFor(delta)}</small></b></div>
