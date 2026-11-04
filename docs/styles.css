@@ -291,14 +291,38 @@ textarea.field.note-field { min-height: 64px; direction: rtl; text-align: start;
 
 .sets { display: grid; gap: 6px; }
 .set-row {
-  display: grid; grid-template-columns: 16px minmax(0, 1.2fr) minmax(0, 1fr) 44px; align-items: center; gap: 6px;
+  display: grid; grid-template-columns: 22px minmax(0, 1.2fr) minmax(0, 1fr) 44px; align-items: center; gap: 6px;
   padding: 4px; border-radius: 12px;
 }
 .set-head { font-size: 0.72rem; color: var(--muted); padding-block: 0; }
 .set-head span:nth-child(2), .set-head span:nth-child(3) { text-align: center; }
-.set-row .n { text-align: center; font-weight: 800; color: var(--muted); font-size: 0.9rem; }
+/* The set number opens the set's panel: a tall, narrow tap target. Warm-up, drop and failure sets show a letter. */
+.set-row .n { height: 44px; padding: 0; border: 0; border-radius: 8px; background: none; text-align: center; font-weight: 800; color: var(--muted); font-size: 0.9rem; }
+.set-row .n[aria-expanded="true"] { background: var(--surface-2); color: var(--ink); }
+.set-row .n.t-w { color: var(--accent); }
+.set-row .n.t-d { color: var(--pr); }
+.set-row .n.t-f { color: var(--danger); }
 .set-row.done { background: var(--done-soft); }
-.set-row.done .n { color: var(--done); }
+.set-row.done .n:not([class*="t-"]) { color: var(--done); }
+.set-panel { display: grid; gap: 8px; margin: -2px 4px 4px; padding: 10px; border-radius: 12px; background: var(--surface-2); }
+.set-panel .seg { background: var(--surface); }
+.set-panel .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.set-panel .effort { display: grid; gap: 6px; font-size: 0.75rem; font-weight: 700; color: var(--muted); }
+.chips { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px; direction: ltr; }
+.chips button { min-height: 40px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); font-weight: 800; font-variant-numeric: tabular-nums; }
+.chips button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.set-panel .fine { font-size: 0.72rem; }
+.set-hint { padding: 8px 10px; border-radius: 10px; background: var(--surface-2); }
+/* Count and rest on the left of the exercise's title. */
+.ex-side { display: grid; justify-items: end; gap: 4px; }
+.rest-pick { border: 0; background: var(--surface-2); color: var(--ink); border-radius: 999px; padding: 4px 10px; font-size: 0.78rem; font-weight: 700; font-variant-numeric: tabular-nums; direction: ltr; }
+/* The next-weight line: a plain hint, amber when it's time for a lighter week. */
+.suggest { margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--done-soft); color: var(--ink); font-size: 0.85rem; line-height: 1.6; }
+.suggest .link { font-size: 0.85rem; font-weight: 800; padding: 0 4px; }
+.suggest .ok { color: var(--done); font-weight: 800; }
+.suggest.deload { background: var(--pr-soft); }
+.wu { color: var(--muted); opacity: 0.8; }
+sub.st { font-size: 0.7em; font-weight: 800; color: var(--pr); margin-inline-start: 1px; }
 .stepper { display: grid; grid-template-columns: 32px minmax(0, 1fr) 32px; align-items: center; gap: 3px; }
 .stepper button {
   height: 44px; border: 0; border-radius: 10px;
@@ -391,6 +415,8 @@ textarea.field { height: auto; min-height: 88px; padding: 10px 12px; font-size: 
 .icon-btn:disabled { opacity: 0.35; }
 .icon-btn.armed { background: var(--danger); color: #fff; }
 .rt-fields { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 8px; }
+.rt-fields .rt-rest { grid-column: 1 / -1; }
+.rt-fields select.field { text-align: start; padding: 0 10px; font-size: 0.95rem; font-weight: 600; }
 .rt-fields label { display: grid; gap: 4px; font-size: 0.75rem; color: var(--muted); font-weight: 700; }
 
 /* ---------- picker ---------- */
@@ -435,6 +461,45 @@ textarea.field { height: auto; min-height: 88px; padding: 10px 12px; font-size: 
 .bars .col b { position: absolute; inset-inline: 0; text-align: center; font-size: 0.75rem; font-weight: 800; font-variant-numeric: tabular-nums; }
 .bars .target { position: absolute; inset-inline: 0; border-top: 1.5px dashed var(--muted); }
 .bars-x { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px; margin-top: 6px; font-size: 0.68rem; color: var(--muted); text-align: center; }
+/* Weekly volume: 12 thinner columns, tonnes on top, a date under every third week. */
+.bars.w12, .bars-x.w12 { grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 4px; }
+.bars.w12 .col b { font-size: 0.62rem; }
+.bars-x.w12 span { white-space: nowrap; overflow: visible; }
+/* «هالأسبوع» is wider than its column: it starts at the right edge and runs left, inside the card. */
+.bars-x.w12 span:last-child { direction: rtl; text-align: start; }
+.streak { margin-top: 8px; font-weight: 700; color: var(--ink); }
+
+/* ---------- muscles map ---------- */
+.muscles { display: grid; gap: 10px; }
+.map-wrap { display: grid; gap: 4px; }
+.body-map { width: 100%; max-width: 360px; height: auto; justify-self: center; }
+.body-map .m-base { fill: var(--surface-2); stroke: var(--line); stroke-width: 1; }
+.body-map .m-ready { fill: var(--done); fill-opacity: 0.35; }
+.body-map .m-mid { fill: var(--pr); fill-opacity: 0.7; }
+.body-map .m-tired { fill: var(--danger); fill-opacity: 0.8; }
+.map-x { display: grid; grid-template-columns: 1fr 1fr; direction: ltr; text-align: center; max-width: 360px; width: 100%; justify-self: center; font-size: 0.75rem; font-weight: 700; color: var(--muted); }
+.ms-line { margin: 0; font-size: 0.85rem; line-height: 1.7; }
+.ms-line .ms-tired { color: var(--danger); font-weight: 700; }
+.ms-line .ms-mid { color: var(--pr); font-weight: 700; }
+.ms-line .ms-ready { color: var(--done); font-weight: 700; }
+.legend i.sw { width: 12px; height: 12px; border: 0; border-radius: 3px; }
+.legend i.sw.m-ready { background: var(--done); opacity: 0.45; }
+.legend i.sw.m-mid { background: var(--pr); opacity: 0.8; }
+.legend i.sw.m-tired { background: var(--danger); opacity: 0.85; }
+
+/* ---------- records and badges ---------- */
+.rec-list li { align-items: center; }
+.rec-list .link { text-align: start; font-size: 0.9rem; padding: 0; }
+.badges { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.badges li { display: grid; justify-items: center; align-content: start; gap: 2px; padding: 10px 6px; border-radius: 12px; background: var(--surface-2); text-align: center; }
+.badges .b-icon { font-size: 1.7rem; line-height: 1.2; filter: grayscale(1); opacity: 0.35; }
+.badges b { font-size: 0.78rem; line-height: 1.3; color: var(--muted); }
+.badges small { font-size: 0.68rem; line-height: 1.4; color: var(--muted); }
+.badges li.on { background: var(--pr-soft); }
+.badges li.on .b-icon { filter: none; opacity: 1; }
+.badges li.on b { color: var(--ink); }
+.badges li.on small { color: var(--pr); font-weight: 700; }
+.badge-list .pr-chip { background: var(--done-soft); color: var(--done); }
 .hist { list-style: none; margin: 0; padding: 0; }
 .hist li { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); font-size: 0.9rem; }
 .hist li.has-note { display: grid; grid-template-columns: auto minmax(0, 1fr); row-gap: 4px; }

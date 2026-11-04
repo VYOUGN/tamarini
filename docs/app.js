@@ -64,6 +64,8 @@ const FORMS = {
   min: ['دقيقة واحدة', 'دقيقتان', 'دقائق', 'دقيقة'],
   hr: ['ساعة', 'ساعتين', 'ساعات', 'ساعة'],
   entry: ['تسجيل واحد', 'تسجيلان', 'تسجيلات', 'تسجيلًا'],
+  week: ['أسبوع واحد', 'أسبوعان', 'أسابيع', 'أسبوعًا'],
+  pr: ['رقم قياسي واحد', 'رقمان قياسيان', 'أرقام قياسية', 'رقمًا قياسيًا'],
 };
 function cnt(n, k) {
   const f = FORMS[k];
@@ -73,7 +75,7 @@ function cnt(n, k) {
   return `${n} ${r >= 3 && r <= 10 ? f[2] : f[3]}`;
 }
 // After "من" or as an object ("رجّعنا") the dual takes its -ين form: 1 من جولتين، رجّعنا سجلين.
-const ofCnt = (n, k) => (n === 2 && { set: 'جولتين', day: 'يومين', rec: 'سجلين' }[k]) || cnt(n, k);
+const ofCnt = (n, k) => (n === 2 && { set: 'جولتين', day: 'يومين', rec: 'سجلين', week: 'أسبوعين', ex: 'تمرينين' }[k]) || cnt(n, k);
 function ago(ts) {
   const s = (Date.now() - ts) / 1000;
   if (s < 60) return 'قبل لحظات';
@@ -171,17 +173,38 @@ function openDB() {
     r.onblocked = () => rej(new Error('blocked'));
   });
 }
+// A set: w (kg; on a bodyweight lift a minus is the machine's help), r (reps), done, and optionally its type
+// t (w warm-up, d drop set, f to failure) and how hard it was: rpe 6–10 or rir 0–5 reps left.
+const SET_TYPES = ['w', 'd', 'f'];
+function saneSet(x) {
+  const o = { w: toSigned(x && x.w), r: Math.round(toNum(x && x.r)), done: !!(x && x.done) };
+  if (!x) return o;
+  if (SET_TYPES.includes(x.t)) o.t = x.t;
+  const rpe = Math.round(toNum(x.rpe) * 2) / 2;
+  if (rpe >= 6 && rpe <= 10) o.rpe = rpe;
+  if (x.rir != null && x.rir !== '' && toNum(x.rir) <= 5) o.rir = Math.round(toNum(x.rir));
+  return o;
+}
+// Rest after each set of one exercise, in seconds (none: the rest in settings).
+function saneRest(it) {
+  const v = Math.round(toNum(it.rest));
+  if (v > 0 && v <= 900) it.rest = v; else delete it.rest;
+}
 function sane(r) {
   if (!r || typeof r.id !== 'string' || typeof r.type !== 'string') return null;
   if (r.type === 'session') {
     r.items = Array.isArray(r.items) ? r.items.filter((it) => it && it.ex) : [];
     for (const it of r.items) {
-      it.sets = Array.isArray(it.sets) ? it.sets.map((x) => ({ w: toSigned(x && x.w), r: Math.round(toNum(x && x.r)), done: !!(x && x.done) })) : [];
+      it.sets = Array.isArray(it.sets) ? it.sets.map(saneSet) : [];
       if (it.note != null) it.note = String(it.note).slice(0, 500);
+      saneRest(it);
     }
     if (typeof r.date !== 'string') return r.deleted ? r : null;
   }
-  if (r.type === 'routine') r.items = Array.isArray(r.items) ? r.items.filter((it) => it && it.ex) : [];
+  if (r.type === 'routine') {
+    r.items = Array.isArray(r.items) ? r.items.filter((it) => it && it.ex) : [];
+    for (const it of r.items) saneRest(it);
+  }
   if (r.type === 'schedule' && (!r.days || typeof r.days !== 'object')) r.days = {};
   if (r.type === 'prefs' && (!r.values || typeof r.values !== 'object')) r.values = {};
   if (r.type === 'body') {
@@ -263,11 +286,14 @@ const sessions = () => [...R.values()].filter((r) => r.type === 'session' && liv
 const sessionsDesc = () => sessions().sort((a, b) => (a.date === b.date ? (b.startedAt || 0) - (a.startedAt || 0) : a.date < b.date ? 1 : -1));
 const doneSets = (s) => s.items.reduce((a, it) => a + it.sets.filter((x) => x.done).length, 0);
 const totalSets = (s) => s.items.reduce((a, it) => a + it.sets.length, 0);
-const volume = (s) => s.items.reduce((a, it) => a + it.sets.reduce((b, x) => b + (x.done ? Math.max(0, x.w || 0) * (x.r || 0) : 0), 0), 0);
+// The sets that count for records and kilos: done, with reps, and not a warm-up.
+const working = (sets) => sets.filter((x) => x.done && x.r > 0 && x.t !== 'w');
+const volume = (s) => s.items.reduce((a, it) => a + working(it.sets).reduce((b, x) => b + Math.max(0, x.w || 0) * x.r, 0), 0);
 const routineSets = (r) => r.items.reduce((a, it) => a + (it.sets || 0), 0);
-function trainedDates() {
+// keep(session) narrows the workouts counted, e.g. to the ones up to a given workout.
+function trainedDates(keep) {
   const set = new Set();
-  for (const s of sessions()) if (doneSets(s) > 0) set.add(s.date);
+  for (const s of sessions()) if (doneSets(s) > 0 && (!keep || keep(s))) set.add(s.date);
   return set;
 }
 // The unfinished workout from today, or one started in the last 8 hours (a workout that runs past midnight).
@@ -335,7 +361,9 @@ function bmiInfo(kgV, cm) {
 
 /* ============================== settings ============================== */
 // Settings are a normal record, so they're backed up and come back after a reinstall like everything else.
-const PREF_DEFAULTS = { rest: 90, restSound: true, wake: false, coach: true, step: 2.5, plates: true, bar: 20, weekStart: 6, theme: 'auto' };
+// effort: how hard each set was, as 'rpe' (6–10) or 'rir' (reps left), or 'off'. suggest: the next-weight line.
+const PREF_DEFAULTS = { rest: 90, restSound: true, wake: false, coach: true, step: 2.5, plates: true, bar: 20, weekStart: 6, theme: 'auto', effort: 'off', suggest: true };
+const TEXT_PREFS = new Set(['theme', 'effort']);
 function prefs() {
   const r = R.get('prefs');
   return Object.assign({}, PREF_DEFAULTS, live(r) && r.values ? r.values : {});
@@ -363,8 +391,11 @@ const bw2s = (n) => (n > 0 ? `+${round2(n)}` : n < 0 ? `−${round2(-n)}` : '');
 const extraTxt = (w) => (w > 0 ? `+${round2(w)} كجم` : w < 0 ? `مساعدة ${round2(-w)} كجم` : 'بوزن جسمك بس');
 // How a finished set reads: 60×8, or for bodyweight 8 (reps), +10×6 (10 kg added) and −20×6 (20 kg of help).
 const setTxt = (x, bw) => (bw ? (x.w ? `${bw2s(x.w)}×${x.r}` : String(x.r)) : `${w2s(x.w) || 0}×${x.r}`);
+const effortTxt = (x) => (x.rpe ? ` @${x.rpe}` : x.rir != null ? ` RIR ${x.rir}` : '');
 // A row of sets for an Arabic line: first set on the right, each one kept left-to-right inside.
-const setsHTML = (sets, bw) => sets.map((x) => `<bdi dir="ltr">${setTxt(x, bw)}</bdi>`).join(' · ');
+// A warm-up reads (40×10), a drop set and a set to failure carry د or ف, and the effort follows: 80×8 @8.
+const setsHTML = (sets, bw) => sets.map((x) => (x.t === 'w' ? `<bdi dir="ltr" class="wu">(${setTxt(x, bw)}${effortTxt(x)})</bdi>`
+  : `<bdi dir="ltr">${setTxt(x, bw)}${effortTxt(x)}</bdi>${x.t ? `<sub class="st">${x.t === 'd' ? 'د' : 'ف'}</sub>` : ''}`)).join(' · ');
 
 // Was workout `o` before workout `ref`? Editing an old workout compares it with what came before it.
 const isBefore = (o, ref) => o.id !== ref.id && (o.date < ref.date || (o.date === ref.date && (o.startedAt || 0) < (ref.startedAt || 0)));
@@ -390,12 +421,12 @@ function history(exId) {
   for (const s of sessionsDesc().reverse()) {
     for (const it of s.items) {
       if (it.ex !== exId) continue;
-      const d = it.sets.filter((x) => x.done && x.r > 0);
+      const d = working(it.sets);
       if (!d.length) continue;
       const top = d.reduce((a, b) => (b.w > a.w || (b.w === a.w && b.r > a.r) ? b : a));
       const e1Set = d.reduce((a, b) => (est1rm(b.w, b.r) > est1rm(a.w, a.r) ? b : a)); // the set the 1RM estimate comes from
       out.push({
-        date: s.date, sid: s.id, top, sets: d, note: (it.note || '').trim(),
+        date: s.date, sid: s.id, top, sets: it.sets.filter((x) => x.done && x.r > 0), note: (it.note || '').trim(),
         e1: est1rm(e1Set.w, e1Set.r), e1Set,
         reps: Math.max(...d.map((x) => x.r)),
       });
@@ -415,7 +446,7 @@ function prsBySession() {
   const out = new Map();
   for (const s of sessionsDesc().reverse()) {
     for (const it of s.items) {
-      const d = it.sets.filter((x) => x.done && x.r > 0);
+      const d = working(it.sets);
       if (!d.length) continue;
       const bw = isBw(it.ex);
       const top = d.reduce((a, b) => (beats(b, a, true) ? b : a));
@@ -534,7 +565,7 @@ function bestBefore(exId, ref) {
   let best = null;
   for (const s of sessions()) {
     if (!isBefore(s, ref)) continue;
-    for (const it of s.items) if (it.ex === exId) for (const x of it.sets) if (x.done && x.r > 0 && (!best || beats(x, best, bw))) best = x;
+    for (const it of s.items) if (it.ex === exId) for (const x of working(it.sets)) if (!best || beats(x, best, bw)) best = x;
   }
   return best;
 }
@@ -545,10 +576,11 @@ function lineAfterSet(s, i, j) {
   const total = totalSets(s), dn = doneSets(s);
   const bw = isBw(it.ex);
   const prev = bestBefore(it.ex, s);
-  const bestToday = it.sets.every((o, k) => k === j || !o.done || beats(x, o, bw));
-  if (prev && x.r > 0 && bestToday && (bw ? beats(x, prev, true) : prev.w > 0 && x.w > prev.w)) {
+  const bestToday = it.sets.every((o, k) => k === j || !o.done || o.t === 'w' || beats(x, o, bw));
+  // A warm-up is never a record.
+  if (prev && x.r > 0 && x.t !== 'w' && bestToday && (bw ? beats(x, prev, true) : prev.w > 0 && x.w > prev.w)) {
     // Same added weight as the best so far (earlier today included) means the record is in reps.
-    const bestSoFar = it.sets.reduce((b, o, k) => (k !== j && o.done && beats(o, b, bw) ? o : b), prev);
+    const bestSoFar = it.sets.reduce((b, o, k) => (k !== j && o.done && o.t !== 'w' && beats(o, b, bw) ? o : b), prev);
     const text = bw && x.w === bestSoFar.w ? pickLine('prReps', { ex: name, r: x.r })
       : bw && x.w <= 0 ? pickLine('prHelp', { ex: name, a: extraTxt(x.w) })
       : pickLine('pr', { ex: name, w: x.w });
@@ -801,6 +833,8 @@ async function importBackup(file) {
 const UI = {
   tab: 'today', screen: 'today', stack: [],
   sessionId: null, draft: null, pickFor: null, pickQuery: '', newExFor: null,
+  setPanel: null, // '<session id>:<exercise>:<set>' whose type/effort panel is open
+  recAll: false, shareCache: null, // { key, file } the finished workout's picture, made ahead of the tap
   progEx: null, progRange: 90, progMetric: 'load', linkEdit: false, dirtyRender: false, coach: null, linkDraft: '', rest: null,
   bodyRange: 90, bodyDate: null, bodyMore: false, bodyProfile: false, bodyMeasure: null, bodyAll: false,
   bodyDraft: null, // { date, vals } typed into the body form but not saved yet, so a re-render keeps it
@@ -866,6 +900,10 @@ function render() {
   renderSyncState();
   tickRest();
   syncWakeLock();
+  // A finished workout's picture is drawn now, so «شارك» can open the share sheet straight from the tap.
+  const sb = main.querySelector('[data-act="share-sum"]');
+  const ss = sb && R.get(sb.dataset.sid);
+  if (live(ss)) setTimeout(() => prepareShare(ss).catch(() => {}), 300);
 }
 function safeRender() {
   if (isField(document.activeElement)) UI.dirtyRender = true; else render();
@@ -896,7 +934,7 @@ function screenSetup() {
 
 /* ---------- today ---------- */
 function weekCard() {
-  const t = todayKey(), ws = weekStart(t), trained = trainedDates();
+  const t = todayKey(), ws = weekStart(t), trained = trainedDates(), sc = streaks().cur;
   let cells = '', planned = 0, got = 0, sets = 0, vol = 0;
   for (let i = 0; i < 7; i++) {
     const k = addDays(ws, i), dow = dateOf(k).getDay();
@@ -912,6 +950,7 @@ function weekCard() {
     <div class="sec-title flush"><h2>هالأسبوع</h2><span class="num">${got} من ${planned}</span></div>
     <div class="week" role="img" aria-label="تمرّنت ${cnt(got, 'day')} من ${ofCnt(planned, 'day')} مخطط لها هالأسبوع">${cells}</div>
     <div class="week-sum"><span>${got ? cnt(got, 'day') + ' في النادي' : 'ما تمرّنت للحين هالأسبوع'}</span><span class="muted num">${cnt(sets, 'set')} · ${kg(vol)}</span></div>
+    ${sc >= 2 ? `<p class="fine streak">🔥 سلسلتك ${ofCnt(sc, 'week')} متتالية. لا تكسرها!</p>` : ''}
   </section>`;
 }
 function doneCard(s) {
@@ -973,6 +1012,57 @@ function screenToday() {
 }
 
 /* ---------- session ---------- */
+const TYPE_NAME = { '': 'عادية', w: 'إحماء', d: 'دروب سيت', f: 'للفشل' };
+const TYPE_MARK = { w: 'إ', d: 'د', f: 'ف' };
+const REST_CHOICES = [60, 90, 120, 180, 240, 300];
+// Under a set (opened by tapping its number): its type, and how hard it was when that's on in settings.
+function setPanelHTML(it, i, j) {
+  const x = it.sets[j], eff = prefs().effort;
+  let h = `<div class="set-panel" data-sp="${i}:${j}">
+    <div class="seg full" role="group" aria-label="نوع الجولة ${j + 1}">${[['', 'عادية'], ['w', 'إحماء'], ['d', 'دروب'], ['f', 'للفشل']].map(([t, l]) => `<button type="button" data-act="set-type" data-i="${i}" data-j="${j}" data-t="${t}" aria-pressed="${(x.t || '') === t}">${l}</button>`).join('')}</div>`;
+  if (eff === 'rpe' || eff === 'rir') {
+    const cur = eff === 'rpe' ? x.rpe : x.rir;
+    h += `<div class="effort"><span>${eff === 'rpe' ? 'الصعوبة (RPE)' : 'كم عدّة كان باقي (RIR)'}</span>
+      <div class="chips" role="group" aria-label="${eff === 'rpe' ? 'صعوبة' : 'العدّات الباقية في'} الجولة ${j + 1}">${(eff === 'rpe' ? [6, 7, 8, 9, 10] : [0, 1, 2, 3, 4]).map((v) => `<button type="button" data-act="set-effort" data-i="${i}" data-j="${j}" data-v="${v}" aria-pressed="${cur === v}">${eff === 'rir' && v === 4 ? '4+' : v}</button>`).join('')}</div></div>
+      <p class="fine">${eff === 'rpe' ? '10 يعني ما تقدر ولا عدّة زيادة، و8 يعني باقي لك عدّتين.' : '0 يعني ما تقدر ولا عدّة زيادة، و2 يعني باقي لك عدّتين.'}</p>`;
+  }
+  return h + '</div>';
+}
+// The next step for an exercise, from last time's working sets (no warm-ups or drop sets): every set at the top
+// weight reached the target reps (the routine's, else 12) → a step more weight; otherwise the same weight and the
+// reps to aim for. Three workouts in a row without beating what came before them → a lighter week.
+function suggestFor(s, it) {
+  if (!prefs().suggest || s.finishedAt) return null;
+  const prev = history(it.ex).filter((h) => { const o = R.get(h.sid); return o && isBefore(o, s); });
+  if (!prev.length) return null;
+  const bw = isBw(it.ex), step = prefs().step;
+  const score = (h) => (bw ? h.top : est1rm(h.top.w, h.top.r));
+  if (prev.length >= 4) {
+    const before = prev.slice(0, -3), recent = prev.slice(-3);
+    const better = bw ? (a, b) => beats(a, b, true) : (a, b) => a > b;
+    const bestBefore = before.reduce((a, h) => (better(score(h), a) ? score(h) : a), score(before[0]));
+    if (!recent.some((h) => better(score(h), bestBefore))) {
+      const top = prev[prev.length - 1].top.w;
+      const light = Math.round((top * 0.6) / step) * step;
+      return { text: bw || light <= 0 ? 'أرقامك هنا ثابتة آخر 3 مرات. خذ أسبوع أخف، بعدّات وجولات أقل، وبعدها ارجع.'
+        : `أرقامك هنا ثابتة آخر 3 مرات. جرّب أسبوع تخفيف بحوالي ${round2(light)} كجم، وبعدها ارجع لوزنك.`, deload: true };
+    }
+  }
+  const ws = prev[prev.length - 1].sets.filter((x) => x.t !== 'w' && x.t !== 'd');
+  if (!ws.length) return null;
+  const W = Math.max(...ws.map((x) => x.w));
+  const atW = ws.filter((x) => x.w === W);
+  const goal = (it.target && it.target.reps) || 12;
+  if (atW.every((x) => x.r >= goal)) {
+    const next = round2(W + step);
+    const text = bw && W < 0 ? (next >= 0 ? `كمّلت ${cnt(goal, 'rep')} في كل الجولات. جرّبها بدون مساعدة.` : `كمّلت ${cnt(goal, 'rep')} في كل الجولات. قلّل المساعدة إلى ${round2(-next)} كجم.`)
+      : bw && W === 0 ? `كمّلت ${cnt(goal, 'rep')} في كل الجولات. جرّب تضيف ${step} كجم.`
+      : `كمّلت ${cnt(goal, 'rep')} في كل الجولات آخر مرة. جرّب ${next} كجم.`;
+    return { text, w: next };
+  }
+  const most = Math.max(...atW.map((x) => x.r));
+  return { text: `${bw && W === 0 ? 'حاول' : 'نفس الوزن، وحاول'} توصل ${cnt(goal, 'rep')} في كل الجولات. آخر مرة أكثر شي ${most}.` };
+}
 function exCard(s, it, i) {
   const info = exInfo(it.ex);
   const dn = it.sets.filter((x) => x.done).length;
@@ -982,10 +1072,20 @@ function exCard(s, it, i) {
     ? `آخر مرة، ${fmt(F.dm, last.date)}${bw ? '، وزن الجسم' : ''}: <span class="num">${setsHTML(last.sets, bw)}</span>`
     : 'أول مرة تسجّل هذا التمرين';
   const prevNote = lastNoteFor(it.ex, s);
+  const sug = suggestFor(s, it);
+  const applied = sug && sug.w != null && it.sets.every((x) => x.done || x.t === 'w' || x.w === sug.w);
   const cur = it.sets.find((x) => !x.done) || it.sets[it.sets.length - 1];
+  const p = prefs(), eff = p.effort === 'rpe' || p.effort === 'rir';
+  // Set numbers count the working sets; a warm-up, a drop set and a set to failure show إ, د and ف instead.
+  let n = 0;
+  const marks = it.sets.map((x) => (x.t === 'w' ? TYPE_MARK.w : (n++, x.t ? TYPE_MARK[x.t] : String(n))));
+  const restNow = it.rest && it.rest !== p.rest ? it.rest : 0;
+  const restSel = `<select class="rest-pick" data-f="ex-rest" data-i="${i}" aria-label="الراحة بعد كل جولة في ${esc(info.name)}">
+    <option value="">⏱ ${p.rest ? mmss(p.rest * 1000) : 'بدون'}</option>
+    ${REST_CHOICES.filter((v) => v !== p.rest).map((v) => `<option value="${v}" ${v === restNow ? 'selected' : ''}>⏱ ${mmss(v * 1000)}</option>`).join('')}</select>`;
   const rows = it.sets.map((x, j) => `
     <div class="set-row ${x.done ? 'done' : ''}">
-      <span class="n num">${j + 1}</span>
+      <button type="button" class="n num${x.t ? ' t-' + x.t : ''}" data-act="set-panel" data-i="${i}" data-j="${j}" aria-expanded="${UI.setPanel === `${s.id}:${i}:${j}`}" aria-label="الجولة ${j + 1}، ${TYPE_NAME[x.t || '']}${effortTxt(x)}. اضغط ${eff ? 'لنوعها وصعوبتها' : 'لنوعها'}">${marks[j]}</button>
       <div class="stepper">
         <button type="button" data-act="w+" data-i="${i}" data-j="${j}" aria-label="زِد وزن الجولة ${j + 1} ${prefs().step} كجم">+</button>
         <input class="field${bw ? ' bw' : ''}" data-f="w" data-i="${i}" data-j="${j}" dir="ltr" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="${bw ? bw2s(x.w) : w2s(x.w)}" placeholder="${bw ? 'وزن الجسم' : '0'}" aria-label="${bw ? 'الوزن الزايد، أو المساعدة بالسالب، في الجولة' : 'وزن الجولة'} ${j + 1} بالكيلو">
@@ -997,15 +1097,19 @@ function exCard(s, it, i) {
         <button type="button" data-act="r-" data-i="${i}" data-j="${j}" aria-label="نقّص عدّة من الجولة ${j + 1}">−</button>
       </div>
       <button type="button" class="check" data-act="toggle" data-i="${i}" data-j="${j}" aria-pressed="${x.done}" aria-label="خلّصت الجولة ${j + 1}">${ICON.check}</button>
-    </div>`).join('');
+    </div>${UI.setPanel === `${s.id}:${i}:${j}` ? setPanelHTML(it, i, j) : ''}`).join('');
   const target = it.target && it.target.sets ? ` · الهدف <span dir="ltr">${it.target.sets} × ${it.target.reps || '–'}</span>` : '';
+  const hint = i === 0 && !s.finishedAt && !meta.setHintSeen && it.sets.length
+    ? `<p class="fine set-hint">اضغط رقم الجولة عشان تخليها إحماء أو دروب أو للفشل${eff ? '، وتسجّل صعوبتها' : ''}. الإحماء ما ينحسب في أرقامك.</p>` : '';
   return `<article class="card ex-card ${dn && dn === it.sets.length ? 'complete' : ''}">
     <div class="ex-head">
       <div><h3>${esc(info.name)}</h3><span class="tag">${esc(info.muscle)}${bw ? ' · وزن الجسم' : ''}${target}</span></div>
-      <span class="count num">${dn} / ${it.sets.length}</span>
+      <div class="ex-side"><span class="count num">${dn} / ${it.sets.length}</span>${s.finishedAt ? '' : restSel}</div>
     </div>
     <p class="last">${lastTxt}</p>
+    ${sug ? `<p class="suggest${sug.deload ? ' deload' : ''}">${sug.text}${sug.w != null && !applied ? ` <button class="link" type="button" data-act="apply-suggest" data-i="${i}">طبّق</button>` : applied ? ' <span class="ok">✓</span>' : ''}</p>` : ''}
     ${prevNote ? `<p class="ex-note"><b>ملاحظتك، ${fmt(F.dm, prevNote.date)}:</b> ${esc(prevNote.note)}</p>` : ''}
+    ${hint}
     <div class="sets">
       ${it.sets.length ? '<div class="set-row set-head"><span>#</span><span>' + (bw ? '+ زايد / − مساعدة' : 'الوزن (كجم)') + '</span><span>العدّات</span><span></span></div>' : ''}
       ${rows}
@@ -1016,14 +1120,17 @@ function exCard(s, it, i) {
     <div class="card-actions">
       <button class="link" type="button" data-act="add-set" data-i="${i}">+ جولة</button>
       ${it.note ? '' : `<button class="link" type="button" data-act="note" data-i="${i}">+ ملاحظة</button>`}
+      ${s.finishedAt ? '' : `<button class="link" type="button" data-act="swap-ex" data-i="${i}">بدّل</button>`}
       ${it.sets.length ? `<button class="link del" type="button" data-act="del-set" data-i="${i}">حذف آخر جولة</button>` : ''}
       <button class="link del" type="button" data-act="remove-ex" data-i="${i}">شيل التمرين</button>
     </div>
   </article>`;
 }
+const sessionMins = (s) => (s.finishedAt && s.startedAt ? Math.max(1, Math.round((s.finishedAt - s.startedAt) / 60000)) : 0);
 function summaryCard(s) {
   const prs = prsBySession().get(s.id) || [];
-  const mins = s.finishedAt && s.startedAt ? Math.max(1, Math.round((s.finishedAt - s.startedAt) / 60000)) : 0;
+  const mins = sessionMins(s);
+  const nb = badgesFrom(s);
   return `<section class="card">
     <div class="sec-title flush"><h2>ملخّص التمرين</h2></div>
     <div class="summary">
@@ -1032,15 +1139,95 @@ function summaryCard(s) {
       <div><b>${mins || '–'}</b><span>الدقايق</span></div>
     </div>
     ${prs.length ? `<ul class="plan-list pr-list">${prs.map((p) => `<li><span><span class="pr-chip">رقم جديد</span> ${esc(exInfo(p.ex).name)}</span><span class="num">${prText(p)}</span></li>`).join('')}</ul>` : ''}
+    ${nb.length ? `<ul class="plan-list badge-list">${nb.map(([, icon, name]) => `<li><span><span class="pr-chip">شارة جديدة</span> ${name}</span><span aria-hidden="true">${icon}</span></li>`).join('')}</ul>` : ''}
+    ${doneSets(s) ? `<button class="btn quiet block" type="button" data-act="share-sum" data-sid="${s.id}">شارك الملخص كصورة</button>` : ''}
   </section>`;
+}
+/* ---------- share card ---------- */
+// The finished workout as a 1080×1350 picture: name and date, the numbers, records, new badges, best sets.
+// Drawn ahead of the tap, because iPhone only opens the share sheet straight from a tap.
+const shareKey = (s) => `${s.id}:${s.updatedAt}`;
+function drawShare(s) {
+  const W = 1080, H = 1350, P = 80;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  const fam = getComputedStyle(document.body).fontFamily;
+  const font = (px, wt = 700) => { g.font = `${wt} ${px}px ${fam}`; };
+  const bg = g.createLinearGradient(0, 0, W, H);
+  bg.addColorStop(0, '#15171A'); bg.addColorStop(1, '#1D2434');
+  g.fillStyle = bg; g.fillRect(0, 0, W, H);
+  g.direction = 'rtl'; g.textAlign = 'right'; g.textBaseline = 'alphabetic';
+  const R0 = W - P;
+  let y = P + 40;
+  font(34, 800); g.fillStyle = '#7FA2F6'; g.fillText('تماريني 💪', R0, y);
+  g.textAlign = 'left'; font(32, 600); g.fillStyle = '#9BA0A8'; g.fillText(fmt(F.long, s.date), P, y);
+  g.textAlign = 'right';
+  y += 110; font(76, 800); g.fillStyle = '#ECEDEF';
+  let name = s.name;
+  while (g.measureText(name).width > W - 2 * P && name.length > 4) name = name.slice(0, -2);
+  g.fillText(name === s.name ? name : name + '…', R0, y);
+  // Three tiles: minutes, sets, kilos.
+  y += 60;
+  const tiles = [['الدقايق', String(sessionMins(s) || '–')], ['الجولات', String(doneSets(s))], ['مجموع الكيلوات', Math.round(volume(s)).toLocaleString('en-US')]];
+  const tw = (W - 2 * P - 2 * 30) / 3;
+  tiles.forEach(([label, val], k) => {
+    const x = R0 - k * (tw + 30);
+    g.fillStyle = 'rgba(255,255,255,0.06)';
+    g.beginPath();
+    if (g.roundRect) g.roundRect(x - tw, y, tw, 170, 28); else g.rect(x - tw, y, tw, 170); // older Safari
+    g.fill();
+    font(64, 800); g.fillStyle = '#ECEDEF'; g.textAlign = 'center'; g.fillText(val, x - tw / 2, y + 95);
+    font(30, 600); g.fillStyle = '#9BA0A8'; g.fillText(label, x - tw / 2, y + 145);
+  });
+  g.textAlign = 'right';
+  y += 170 + 90;
+  const line = (label, value, color) => {
+    font(38, 700); g.fillStyle = color || '#ECEDEF'; g.textAlign = 'right'; g.direction = 'rtl'; g.fillText(label, R0, y);
+    font(38, 800); g.textAlign = 'left'; g.direction = 'ltr'; g.fillStyle = '#ECEDEF'; g.fillText(value, P, y);
+    g.textAlign = 'right'; g.direction = 'rtl';
+    y += 64;
+  };
+  const prs = prsBySession().get(s.id) || [];
+  if (prs.length) {
+    font(40, 800); g.fillStyle = '#EBBC4D'; g.fillText(`أرقام جديدة 🔥`, R0, y); y += 66;
+    for (const p of prs.slice(0, 3)) line(exInfo(p.ex).name, setTxt(p.top, isBw(p.ex)));
+    y += 20;
+  }
+  const best = s.items.map((it) => { const d = working(it.sets); return d.length ? { it, top: d.reduce((a, b) => (beats(b, a, true) ? b : a)) } : null; }).filter(Boolean);
+  if (best.length) {
+    font(40, 800); g.fillStyle = '#7FA2F6'; g.fillText('أفضل جولة في كل تمرين', R0, y); y += 66;
+    for (const b of best.slice(0, prs.length ? 4 : 6)) { if (y > H - 200) break; line(exInfo(b.it.ex).name, setTxt(b.top, isBw(b.it.ex))); }
+  }
+  const nb = badgesFrom(s);
+  if (nb.length && y < H - 140) {
+    y += 10; font(40, 800); g.fillStyle = '#4FC987';
+    g.fillText(`شارة جديدة: ${nb.map((b) => `${b[1]} ${b[2]}`).slice(0, 2).join('، ')}`, R0, y);
+    y += 64;
+  }
+  // A short workout ends up square instead of a tall picture that's half empty.
+  const out = document.createElement('canvas');
+  out.width = W; out.height = Math.min(H, Math.max(1080, y + P));
+  out.getContext('2d').drawImage(c, 0, 0);
+  return new Promise((res) => out.toBlob((b) => res(b), 'image/jpeg', 0.92));
+}
+async function prepareShare(s) {
+  const key = shareKey(s);
+  if (UI.shareCache && UI.shareCache.key === key) return UI.shareCache;
+  const blob = await drawShare(s);
+  if (!blob) return null;
+  UI.shareCache = { key, file: new File([blob], `tamarini-${s.date}.jpg`, { type: 'image/jpeg' }) };
+  return UI.shareCache;
 }
 /* ---------- rest timer ---------- */
 // Starts when a set is ticked (unless it was the last one) and counts down in the workout header.
 let audioCtx = null;
-function startRest(s) {
+// The exercise's own rest wins over the one in settings.
+function startRest(s, it) {
   const p = prefs();
-  if (!p.rest || s.finishedAt || doneSets(s) >= totalSets(s)) { UI.rest = null; return; }
-  UI.rest = { sid: s.id, until: Date.now() + p.rest * 1000, total: p.rest * 1000, rang: false };
+  const secs = (it && it.rest) || p.rest;
+  if (!secs || s.finishedAt || doneSets(s) >= totalSets(s)) { UI.rest = null; return; }
+  UI.rest = { sid: s.id, until: Date.now() + secs * 1000, total: secs * 1000, rang: false };
   // Sound can only start from a tap, so the audio is opened now for the beep later.
   if (p.restSound) {
     try {
@@ -1133,6 +1320,8 @@ function screenSettings() {
       ${sw('restSound', 'صوت لما تخلص الراحة', 'إذا الجوال على الصامت ما يطلع صوت', !p.rest)}
       ${sw('wake', 'الشاشة تظل شغّالة', wakeOk ? 'وقت التمرين بس، عشان ما تفتح القفل كل جولة' : 'جهازك ما يدعم هذي الخاصية', !wakeOk)}
       ${sw('coach', 'جمل تحفيزية', 'تحت شريط التقدّم وقت التمرين')}
+      ${sw('suggest', 'اقتراح الوزن الجاي', 'سطر تحت «آخر مرة» يقول لك تزيد الوزن أو العدّات، أو تاخذ أسبوع أخف')}
+      ${row('صعوبة الجولة', 'بعد كل جولة تختار كم كانت صعبة. RPE من 6 إلى 10، وRIR كم عدّة كان باقي لك', seg('effort', [['off', 'إيقاف'], ['rpe', 'RPE'], ['rir', 'RIR']], 'صعوبة الجولة'))}
       ${row('خطوة زر + و − للوزن', 'كم كيلو يزيد أو ينقص الوزن مع كل ضغطة', seg('step', [[1, '1'], [1.25, '1.25'], [2.5, '2.5'], [5, '5']], 'خطوة الوزن'))}
     </section>
     <section class="card settings">
@@ -1236,7 +1425,7 @@ function commitDraft(silent) {
   }
   const rec = R.get(d.id) || { id: d.id, type: 'routine', createdAt: Date.now() };
   rec.name = name;
-  rec.items = d.items.map((it) => ({ ex: it.ex, sets: Math.max(1, Math.round(it.sets) || 1), reps: Math.round(it.reps) || 0, weight: round2(it.weight || 0) }));
+  rec.items = d.items.map((it) => ({ ex: it.ex, sets: Math.max(1, Math.round(it.sets) || 1), reps: Math.round(it.reps) || 0, weight: round2(it.weight || 0), ...(it.rest ? { rest: it.rest } : {}) }));
   rec.deleted = false;
   save(rec);
   d.changed = false;
@@ -1260,6 +1449,10 @@ function screenRoutine() {
       <label>الجولات<input class="field" data-f="rt-sets" data-i="${i}" inputmode="numeric" value="${it.sets || ''}" autocomplete="off"></label>
       <label>العدّات<input class="field" data-f="rt-reps" data-i="${i}" inputmode="numeric" value="${it.reps || ''}" autocomplete="off"></label>
       <label>الوزن (كجم)<input class="field" data-f="rt-weight" data-i="${i}" dir="ltr" inputmode="decimal" value="${exInfo(it.ex).bw ? bw2s(it.weight) : w2s(it.weight)}" placeholder="${exInfo(it.ex).bw ? 'وزن الجسم' : '–'}" autocomplete="off"></label>
+      <label class="rt-rest">الراحة بعد كل جولة<select class="field" data-f="rt-rest" data-i="${i}">
+        <option value="">حسب الإعدادات (${prefs().rest ? mmss(prefs().rest * 1000) : 'بدون مؤقت'})</option>
+        ${REST_CHOICES.map((v) => `<option value="${v}" ${it.rest === v ? 'selected' : ''}>${mmss(v * 1000)}</option>`).join('')}
+      </select></label>
     </div>
   </li>`).join('')}</ol>`;
   if (!d.items.length) h += '<p class="empty">أضف التمارين اللي تسويها في هذا اليوم.</p>';
@@ -1272,36 +1465,60 @@ function screenRoutine() {
 
 /* ---------- exercise picker ---------- */
 const kindTag = (e) => (e.bar ? '<span class="bar-tag">بار</span>' : e.bw ? '<span class="bar-tag">وزن الجسم</span>' : '');
+// Swapping an exercise lists the same muscle first, without the one being swapped.
 function pickListHTML() {
   const q = norm(UI.pickQuery);
-  const all = exercises().filter((e) => !q || norm(e.name).includes(q));
+  const swap = UI.pickFor && UI.pickFor.kind === 'swap' ? UI.pickFor : null;
+  const all = exercises().filter((e) => (!q || norm(e.name).includes(q)) && (!swap || e.id !== swap.ex));
   if (!all.length) return '<p class="empty">ما لقينا تمرين بهالاسم. أضفه من الزر تحت.</p>';
+  const group = (title, list) => `<div class="pick-group"><h3>${title}</h3>${list.map((e) => `<button class="pick" type="button" data-act="pick" data-ex="${e.id}"><span>${esc(e.name)}</span>${kindTag(e)}</button>`).join('')}</div>`;
   let h = '';
+  const same = swap && !q ? exInfo(swap.ex).muscle : '';
+  if (same) {
+    const list = all.filter((e) => e.muscle === same);
+    if (list.length) h += group(`بدائل لنفس العضلة: ${esc(same)}`, list);
+  }
   for (const m of MUSCLES) {
+    if (m === same) continue;
     const list = all.filter((e) => e.muscle === m);
-    if (!list.length) continue;
-    h += `<div class="pick-group"><h3>${esc(m)}</h3>${list.map((e) => `<button class="pick" type="button" data-act="pick" data-ex="${e.id}"><span>${esc(e.name)}</span>${kindTag(e)}</button>`).join('')}</div>`;
+    if (list.length) h += group(esc(m), list);
   }
   return h;
 }
 function screenPick() {
+  const p = UI.pickFor;
   const h = `<input class="field" id="pick-q" data-f="pick-q" type="search" placeholder="دوّر على تمرين" value="${esc(UI.pickQuery)}" autocomplete="off" enterkeyhint="search">
     <div id="pick-list" class="pick-list">${pickListHTML()}</div>
     <button class="btn quiet block" type="button" data-act="new-ex">+ تمرين مو موجود؟ أضفه</button>`;
-  return { title: 'اختر تمرين', subtitle: UI.pickFor && UI.pickFor.kind === 'routine' ? 'يضاف للتمرين اليومي' : 'يضاف لتمرين اليوم', html: h, back: true };
+  const subtitle = p && p.kind === 'swap' ? `بدال ${exInfo(p.ex).name}` : p && p.kind === 'routine' ? 'يضاف للتمرين اليومي' : 'يضاف لتمرين اليوم';
+  return { title: p && p.kind === 'swap' ? 'بدّل التمرين' : 'اختر تمرين', subtitle, html: h, back: true };
 }
 function pickExercise(exId) {
   const p = UI.pickFor;
+  let swapped = -1;
   if (p && p.kind === 'session') {
     const s = R.get(p.sid);
     if (live(s)) { s.items.push(itemFromTarget(exId, 3, 0, 0, s)); save(s); }
+  } else if (p && p.kind === 'swap') {
+    // Same number of working sets, the same target and rest; the weights come from the new exercise's last time.
+    const s = R.get(p.sid), old = live(s) ? s.items[p.i] : null;
+    if (old && old.ex === p.ex && !old.sets.some((x) => x.done)) {
+      const t = old.target;
+      s.items[p.i] = itemFromTarget(exId, t ? t.sets : old.sets.filter((x) => x.t !== 'w').length, t ? t.reps : 0, 0, s, old.rest);
+      if (t) s.items[p.i].target = t;
+      UI.setPanel = null;
+      save(s);
+      swapped = p.i;
+      toast(`بدّلنا ${exInfo(p.ex).name} بـ ${exInfo(exId).name}`);
+    }
   } else if (p && p.kind === 'routine' && UI.draft) {
     UI.draft.items.push({ ex: exId, sets: 3, reps: 10, weight: 0 });
     UI.draft.changed = true;
   }
   UI.pickQuery = '';
   back();
-  window.scrollTo(0, document.body.scrollHeight);
+  if (swapped >= 0) { const c = main.querySelectorAll('.ex-card')[swapped]; if (c) c.scrollIntoView({ block: 'center' }); }
+  else window.scrollTo(0, document.body.scrollHeight);
 }
 
 /* ---------- new exercise ---------- */
@@ -1386,6 +1603,177 @@ function attendanceCard() {
     </div>
     <div class="bars-x">${weeks.map((w) => `<span>${w.cur ? 'هالأسبوع' : fmt(F.dm, w.ws).replace(' ', '<br>')}</span>`).join('')}</div>
     <div class="legend"><span><i></i>أيام تمرّنت فيها</span>${planned ? `<span><i class="d"></i>المخطط: ${cnt(planned, 'day')}</span>` : ''}</div>
+    ${streakLine()}
+  </section>`;
+}
+
+/* ---------- streaks and badges ---------- */
+// Weeks in a row with at least the planned number of training days (one day when there's no plan).
+// This week joins the streak once it's met, and only breaks it after it ends.
+function streaks(keep) {
+  const trained = trainedDates(keep);
+  if (!trained.size) return { cur: 0, best: 0 };
+  const need = plannedDays() || 1;
+  const ws0 = weekStart(todayKey());
+  let run = 0, best = 0, cur = 0;
+  for (let ws = weekStart([...trained].sort()[0]); ws <= ws0; ws = addDays(ws, 7)) {
+    let c = 0;
+    for (let i = 0; i < 7; i++) if (trained.has(addDays(ws, i))) c++;
+    if (ws === ws0) { cur = c >= need ? run + 1 : run; best = Math.max(best, cur); break; }
+    run = c >= need ? run + 1 : 0;
+    best = Math.max(best, run);
+  }
+  return { cur, best };
+}
+function streakLine() {
+  const st = streaks();
+  if (!st.best) return '';
+  return `<p class="fine streak">${st.cur ? `🔥 سلسلتك ${ofCnt(st.cur, 'week')} متتالية` : 'السلسلة وقفت. التزم بجدولك هالأسبوع وتبدأ من جديد'}${st.best > st.cur ? `، وأطول سلسلة ${ofCnt(st.best, 'week')}` : ''}.</p>`;
+}
+// Everything the badges look at, from the workouts keep() lets through (all of them by default).
+function badgeStats(keep = () => true) {
+  const ss = sessions().filter((s) => doneSets(s) > 0 && keep(s));
+  let sets = 0, kgs = 0;
+  for (const s of ss) { kgs += volume(s); for (const it of s.items) sets += working(it.sets).length; }
+  let prs = 0;
+  for (const [sid, list] of prsBySession()) { const s = R.get(sid); if (s && keep(s)) prs += list.length; }
+  // A bodyweight lift done with no help after needing the machine's help on it before.
+  const helped = new Set();
+  let unassisted = false;
+  for (const s of ss.sort((a, b) => (a.date === b.date ? (a.startedAt || 0) - (b.startedAt || 0) : a.date < b.date ? -1 : 1))) {
+    for (const it of s.items) if (isBw(it.ex)) for (const x of working(it.sets)) { if (x.w < 0) helped.add(it.ex); else if (helped.has(it.ex)) unassisted = true; }
+  }
+  const pf = profile(), ws = weighIns();
+  const dir = pf.goalKg && ws.length ? Math.sign(pf.goalKg - ws[0].kg) : 0;
+  const goal = !!dir && ws.slice(1).some((r) => (dir > 0 ? r.kg >= pf.goalKg - 0.3 : r.kg <= pf.goalKg + 0.3));
+  return { workouts: ss.length, sets, kgs, prs, streak: streaks(keep).best, unassisted, goal };
+}
+// [id, icon, name, how to earn it, (stats) => [have, need], what's left to say]
+const BADGES = [
+  ['w1', '🏁', 'أول تمرين', 'خلّص أول تمرين', (b) => [b.workouts, 1], (n) => ofCnt(n, 'ex')],
+  ['w10', '💪', '10 تمارين', 'تمرّن 10 مرات', (b) => [b.workouts, 10], (n) => ofCnt(n, 'ex')],
+  ['w50', '🏋️', '50 تمرين', 'تمرّن 50 مرة', (b) => [b.workouts, 50], (n) => ofCnt(n, 'ex')],
+  ['w100', '🏆', '100 تمرين', 'تمرّن 100 مرة', (b) => [b.workouts, 100], (n) => ofCnt(n, 'ex')],
+  ['s100', '🔁', '100 جولة', 'خلّص 100 جولة', (b) => [b.sets, 100], (n) => ofCnt(n, 'set')],
+  ['s1000', '⚙️', '1000 جولة', 'خلّص 1000 جولة', (b) => [b.sets, 1000], (n) => ofCnt(n, 'set')],
+  ['car', '🚗', 'وزن سيارة', 'ارفع 1.5 طن في المجموع', (b) => [b.kgs, 1500], (n) => kg(n)],
+  ['elephant', '🐘', 'وزن فيل', 'ارفع 6 أطنان في المجموع', (b) => [b.kgs, 6000], (n) => kg(n)],
+  ['bus', '🚌', 'وزن باص', 'ارفع 12 طن في المجموع', (b) => [b.kgs, 12000], (n) => kg(n)],
+  ['plane', '✈️', 'وزن طيارة', 'ارفع 40 طن في المجموع', (b) => [b.kgs, 40000], (n) => kg(n)],
+  ['pr1', '⭐', 'أول رقم قياسي', 'اكسر رقمك في أي تمرين', (b) => [b.prs, 1], (n) => cnt(n, 'pr')],
+  ['pr10', '🌟', '10 أرقام قياسية', 'اكسر رقمك 10 مرات', (b) => [b.prs, 10], (n) => cnt(n, 'pr')],
+  ['pr50', '💫', '50 رقم قياسي', 'اكسر رقمك 50 مرة', (b) => [b.prs, 50], (n) => cnt(n, 'pr')],
+  ['st4', '🔥', 'سلسلة 4 أسابيع', 'التزم بجدولك 4 أسابيع ورا بعض', (b) => [b.streak, 4], (n) => ofCnt(n, 'week')],
+  ['st12', '☄️', 'سلسلة 12 أسبوع', 'التزم بجدولك 12 أسبوع ورا بعض', (b) => [b.streak, 12], (n) => ofCnt(n, 'week')],
+  ['free', '🦅', 'بدون مساعدة', 'سوّ جولة بدون مساعدة في تمرين كنت تحتاج فيه مساعدة', (b) => [b.unassisted ? 1 : 0, 1], null],
+  ['goal', '🎯', 'وصلت هدفك', 'وصّل وزن جسمك للوزن المستهدف', (b) => [b.goal ? 1 : 0, 1], null],
+];
+const earnedBadges = (b) => BADGES.filter((x) => { const [have, need] = x[4](b); return have >= need; }).map((x) => x[0]);
+// The badges a workout earned: the ones true with it and everything before it, but not without it.
+function badgesFrom(s) {
+  const upTo = (o) => o.id === s.id || isBefore(o, s);
+  const before = new Set(earnedBadges(badgeStats((o) => isBefore(o, s))));
+  return earnedBadges(badgeStats(upTo)).filter((id) => !before.has(id)).map((id) => BADGES.find((x) => x[0] === id));
+}
+function badgesCard() {
+  const b = badgeStats();
+  const got = new Set(earnedBadges(b));
+  return `<div class="sec-title"><h2>شاراتك</h2><span class="num">${got.size} من ${BADGES.length}</span></div>
+  <section class="card"><ul class="badges">${BADGES.map(([id, icon, name, how, prog, left]) => {
+    const [have, need] = prog(b), on = got.has(id);
+    const sub = on ? 'حصّلتها ✓' : left && have > 0 ? `باقي ${left(Math.max(0, Math.ceil(need - have)))}` : how;
+    return `<li class="${on ? 'on' : ''}"><span class="b-icon" aria-hidden="true">${icon}</span><b>${name}</b><small>${sub}</small></li>`;
+  }).join('')}</ul></section>`;
+}
+
+/* ---------- muscles, weekly volume, records ---------- */
+// Fatigue per muscle from the last 4 days: a working set counts 1 right after it, fading to 0 at 96 hours.
+const RECOVER_H = 96;
+function muscleLoad() {
+  const now = Date.now(), load = Object.fromEntries(MUSCLES.map((m) => [m, 0]));
+  for (const s of sessions()) {
+    const hrs = (now - (s.finishedAt || s.startedAt || dateOf(s.date).getTime())) / 3600e3;
+    if (hrs < 0 || hrs >= RECOVER_H) continue;
+    for (const it of s.items) {
+      const m = exInfo(it.ex).muscle;
+      if (m in load) load[m] += working(it.sets).length * (1 - hrs / RECOVER_H);
+    }
+  }
+  return load;
+}
+const muscleState = (v) => (v >= 6 ? 'tired' : v >= 2 ? 'mid' : 'ready');
+const STATE_NAME = { tired: 'متعبة', mid: 'تتعافى', ready: 'جاهزة' };
+// A plain figure from the front (right) and the back (left). Each muscle group is a set of shapes.
+function bodySVG(st) {
+  const c = (m) => `m-${st[m]}`;
+  const fig = (cx, front) => `
+    <circle class="m-base" cx="${cx}" cy="16" r="10"/>
+    <rect class="m-base" x="${cx - 4}" y="25" width="8" height="7"/>
+    <rect class="m-base" x="${cx - 20}" y="32" width="40" height="56" rx="10"/>
+    <rect class="m-base" x="${cx - 36}" y="73" width="9" height="24" rx="4"/><rect class="m-base" x="${cx + 27}" y="73" width="9" height="24" rx="4"/>
+    <ellipse class="${c('أكتاف')}" cx="${cx - 25}" cy="40" rx="9" ry="8"/><ellipse class="${c('أكتاف')}" cx="${cx + 25}" cy="40" rx="9" ry="8"/>
+    <rect class="${c(front ? 'بايسبس' : 'ترايسبس')}" x="${cx - 34}" y="48" width="10" height="23" rx="5"/><rect class="${c(front ? 'بايسبس' : 'ترايسبس')}" x="${cx + 24}" y="48" width="10" height="23" rx="5"/>
+    ${front
+      ? `<ellipse class="${c('صدر')}" cx="${cx - 9}" cy="47" rx="10" ry="8"/><ellipse class="${c('صدر')}" cx="${cx + 9}" cy="47" rx="10" ry="8"/>
+         <rect class="${c('بطن')}" x="${cx - 9}" y="58" width="18" height="27" rx="4"/>`
+      : `<path class="${c('ظهر')}" d="M${cx - 18} 34 L${cx + 18} 34 L${cx + 15} 80 Q${cx} 86 ${cx - 15} 80 Z"/>`}
+    <rect class="${front ? 'm-base' : c('أرجل')}" x="${cx - 18}" y="86" width="36" height="12" rx="5"/>
+    <rect class="${c('أرجل')}" x="${cx - 17}" y="99" width="15" height="42" rx="6"/><rect class="${c('أرجل')}" x="${cx + 2}" y="99" width="15" height="42" rx="6"/>
+    <rect class="${c('أرجل')}" x="${cx - 15}" y="144" width="11" height="32" rx="5"/><rect class="${c('أرجل')}" x="${cx + 4}" y="144" width="11" height="32" rx="5"/>`;
+  return `<svg class="body-map" viewBox="0 0 240 180" role="img" aria-label="${MUSCLES.map((m) => `${m} ${STATE_NAME[st[m]]}`).join('، ')}">${fig(180, true)}${fig(60, false)}</svg>`;
+}
+function musclesCard() {
+  const load = muscleLoad();
+  const st = Object.fromEntries(MUSCLES.map((m) => [m, muscleState(load[m])]));
+  const by = (k) => MUSCLES.filter((m) => st[m] === k);
+  const line = ['tired', 'mid', 'ready'].filter((k) => by(k).length).map((k) => `<span class="ms-${k}">${STATE_NAME[k]}: ${by(k).join('، ')}</span>`).join(' · ');
+  return `<div class="sec-title"><h2>عضلاتك</h2><span>آخر 4 أيام</span></div>
+  <section class="card muscles">
+    <div class="map-wrap">${bodySVG(st)}<div class="map-x"><span>ورا</span><span>قدّام</span></div></div>
+    <p class="ms-line">${line}</p>
+    <div class="legend"><span><i class="sw m-tired"></i>متعبة</span><span><i class="sw m-mid"></i>تتعافى</span><span><i class="sw m-ready"></i>جاهزة</span></div>
+    <p class="fine">تقدير من عدد جولاتك، وكل جولة يخف أثرها مع الوقت لين تختفي بعد 4 أيام. مو قياس طبي.</p>
+  </section>`;
+}
+// Kilos lifted per week (weight × reps of the working sets) over the last 12 weeks, in tonnes.
+function volumeCard() {
+  const ws0 = weekStart(todayKey());
+  const weeks = [];
+  for (let w = 11; w >= 0; w--) weeks.push({ ws: addDays(ws0, -7 * w), kg: 0, cur: w === 0 });
+  for (const s of sessions()) {
+    const wk = weeks.find((x) => s.date >= x.ws && s.date < addDays(x.ws, 7));
+    if (wk) wk.kg += volume(s);
+  }
+  if (!weeks.some((w) => w.kg)) return '';
+  const max = Math.max(...weeks.map((w) => w.kg));
+  const full = weeks.slice(0, -1).filter((w) => w.kg);
+  const avg = full.length ? full.reduce((a, w) => a + w.kg, 0) / full.length : 0;
+  const t = (v) => round1(v / 1000);
+  return `<div class="sec-title"><h2>الحجم الأسبوعي</h2><span class="num">هالأسبوع ${t(weeks[11].kg)} طن</span></div>
+  <section class="card">
+    <div class="bars w12" role="img" aria-label="الطن اللي رفعته كل أسبوع، آخر 12 أسبوع">
+      ${weeks.map((w) => `<div class="col ${w.cur ? 'cur' : ''}"><b style="bottom:calc(${(w.kg / max) * 100}% + 2px)">${w.kg ? t(w.kg) : ''}</b><i style="height:${(w.kg / max) * 100}%"></i></div>`).join('')}
+    </div>
+    <div class="bars-x w12">${weeks.map((w, k) => `<span>${w.cur ? 'هالأسبوع' : k % 3 === 2 ? fmt(F.dm, w.ws).replace(' ', '<br>') : ''}</span>`).join('')}</div>
+    <p class="fine">مجموع الوزن × العدّات في جولاتك بالطن، بدون الإحماء ووزن جسمك${avg ? `. معدلك ${t(avg)} طن بالأسبوع` : ''}.</p>
+  </section>`;
+}
+// Every exercise's best set and the day it was first done, newest record first.
+function recordsCard(list) {
+  const rows = [];
+  for (const { e } of list) {
+    const bw = isBw(e.id);
+    let best = null, date = '';
+    for (const h of history(e.id)) if (!best || beats(h.top, best, true)) { best = h.top; date = h.date; }
+    if (best) rows.push({ e, best, date, bw });
+  }
+  if (!rows.length) return '';
+  rows.sort((a, b) => (a.date < b.date ? 1 : -1));
+  const shown = UI.recAll ? rows : rows.slice(0, 8);
+  return `<div class="sec-title"><h2>أرقامك القياسية</h2><span>${cnt(rows.length, 'ex')}</span></div>
+  <section class="card">
+    <ul class="hist rec-list">${shown.map((r) => `<li><button class="link" type="button" data-act="rec-pick" data-ex="${r.e.id}">${esc(r.e.name)}</button><span class="sets-txt"><bdi dir="ltr">${setTxt(r.best, r.bw)}</bdi> · ${fmtDay(r.date)}</span></li>`).join('')}</ul>
+    ${rows.length > 8 ? `<div><button class="link" type="button" data-act="rec-all">${UI.recAll ? 'اعرض أقل' : 'اعرض الكل'}</button></div>` : ''}
   </section>`;
 }
 /* ---------- body ---------- */
@@ -1545,8 +1933,10 @@ function screenProgress() {
   withData.sort((a, b) => (a.last < b.last ? 1 : -1));
   if (!withData.length) {
     h += '<div class="sec-title"><h2>تقدّم الأوزان</h2></div><section class="card"><p class="empty">خلّص أول تمرين وبيطلع لك هنا رسم يوضح كيف أوزانك تزيد.</p></section>';
+    h += badgesCard();
     return { title: 'التقدّم', subtitle: 'جسمك وأوزانك وأيام النادي', html: h, tabs: true };
   }
+  h += musclesCard();
   const exId = withData.some((w) => w.e.id === UI.progEx) ? UI.progEx : withData[0].e.id;
   const all = history(exId);
   const from = UI.progRange ? addDays(todayKey(), -UI.progRange) : '0000';
@@ -1603,6 +1993,7 @@ function screenProgress() {
     <div class="sec-title flush"><h2>آخر الجلسات</h2><span>${cnt(all.length, 'sess')}</span></div>
     <ul class="hist">${all.slice(-10).reverse().map((x) => `<li${x.note ? ' class="has-note"' : ''}><span>${fmt(F.dm, x.date)} ${x.pr ? '<span class="pr-chip">رقم جديد</span>' : ''}</span><span class="sets-txt">${setsHTML(x.sets, bw)}</span>${x.note ? `<p class="hist-note">${esc(x.note)}</p>` : ''}</li>`).join('')}</ul>
   </section>`;
+  h += recordsCard(withData) + volumeCard() + badgesCard();
   return { title: 'التقدّم', subtitle: 'جسمك وأوزانك وأيام النادي', html: h, tabs: true };
 }
 
@@ -1664,17 +2055,34 @@ const SCREENS = {
 };
 
 /* ============================== actions ============================== */
-function itemFromTarget(ex, sets, reps, weight, s) {
+// The rest last picked for this exercise, so a free workout keeps it too.
+function lastRestFor(exId) {
+  for (const s of sessionsDesc()) {
+    const it = s.items.find((i) => i.ex === exId && i.rest);
+    if (it) return it.rest;
+  }
+  return 0;
+}
+// A new exercise in a workout: last time's warm-ups first, then the working sets with last time's weights.
+function itemFromTarget(ex, sets, reps, weight, s, rest) {
   const last = lastSetsFor(ex, s);
+  const warm = last ? last.sets.filter((x) => x.t === 'w') : [];
+  const work = last ? last.sets.filter((x) => x.t !== 'w') : [];
   const n = Math.max(1, sets || 3);
-  return {
+  const it = {
     ex,
     target: sets && reps ? { sets, reps } : null,
-    sets: Array.from({ length: n }, (_, j) => {
-      const ls = last ? last.sets[Math.min(j, last.sets.length - 1)] : null;
-      return { w: (ls && ls.w) || weight || 0, r: reps || (ls && ls.r) || 0, done: false };
-    }),
+    sets: [
+      ...warm.map((x) => ({ w: x.w, r: x.r, done: false, t: 'w' })),
+      ...Array.from({ length: n }, (_, j) => {
+        const ls = work.length ? work[Math.min(j, work.length - 1)] : null;
+        return { w: (ls && ls.w) || weight || 0, r: reps || (ls && ls.r) || 0, done: false };
+      }),
+    ],
   };
+  const r = rest || lastRestFor(ex);
+  if (r) it.rest = r;
+  return it;
 }
 function startSession(rtId) {
   const rt = rtId ? R.get(rtId) : null;
@@ -1683,7 +2091,7 @@ function startSession(rtId) {
     routine: live(rt) ? rt.id : null, name: live(rt) ? rt.name : 'تمرين حر',
     startedAt: Date.now(), finishedAt: null, items: [],
   };
-  if (live(rt)) s.items = rt.items.map((it) => itemFromTarget(it.ex, it.sets, it.reps, it.weight, s));
+  if (live(rt)) s.items = rt.items.map((it) => itemFromTarget(it.ex, it.sets, it.reps, it.weight, s, it.rest));
   save(s);
   go('today');
 }
@@ -1702,6 +2110,7 @@ const actions = {
     const it = s.items[+b.dataset.i], x = it && it.sets[+b.dataset.j];
     if (!x) return;
     x.done = !x.done;
+    const key = `${s.id}:${b.dataset.i}:${b.dataset.j}`;
     if (x.done) {
       if (!x.r && it.target && it.target.reps) x.r = it.target.reps;
       const nx = it.sets[+b.dataset.j + 1];
@@ -1711,10 +2120,61 @@ const actions = {
         UI.coach = { sid: s.id, text: line.text };
         if (line.pr) toast(line.text);
       }
-      startRest(s);
-    }
+      startRest(s, it);
+      // With effort on, the set's panel opens right away to ask how hard it was.
+      const e = prefs().effort;
+      if ((e === 'rpe' || e === 'rir') && x.t !== 'w') UI.setPanel = key;
+    } else if (UI.setPanel === key) UI.setPanel = null;
     save(s);
     render();
+  },
+  // Opened and closed in place, so numbers being typed elsewhere on the card stay.
+  'set-panel': (b) => {
+    const s = curSession(); if (!s) return;
+    const i = +b.dataset.i, j = +b.dataset.j, key = `${s.id}:${i}:${j}`;
+    const open = main.querySelector('.set-panel');
+    const wasThis = open && open.dataset.sp === `${i}:${j}`;
+    if (open) open.remove();
+    for (const o of main.querySelectorAll('[data-act="set-panel"][aria-expanded="true"]')) o.setAttribute('aria-expanded', 'false');
+    if (!meta.setHintSeen) { setMeta('setHintSeen', true); const h = main.querySelector('.set-hint'); if (h) h.remove(); }
+    if (wasThis) { UI.setPanel = null; return; }
+    UI.setPanel = key;
+    b.closest('.set-row').insertAdjacentHTML('afterend', setPanelHTML(s.items[i], i, j));
+    b.setAttribute('aria-expanded', 'true');
+  },
+  'set-type': (b) => {
+    const s = curSession(); if (!s) return;
+    const x = s.items[+b.dataset.i] && s.items[+b.dataset.i].sets[+b.dataset.j]; if (!x) return;
+    if (b.dataset.t) x.t = b.dataset.t; else delete x.t;
+    save(s);
+    render();
+  },
+  // Tapping the chosen value again clears it. Picking one closes the panel.
+  'set-effort': (b) => {
+    const s = curSession(); if (!s) return;
+    const x = s.items[+b.dataset.i] && s.items[+b.dataset.i].sets[+b.dataset.j]; if (!x) return;
+    const k = prefs().effort === 'rir' ? 'rir' : 'rpe', v = +b.dataset.v;
+    if (x[k] === v) delete x[k];
+    else { x[k] = v; UI.setPanel = null; }
+    save(s);
+    render();
+  },
+  'apply-suggest': (b) => {
+    const s = curSession(); if (!s) return;
+    const it = s.items[+b.dataset.i]; if (!it) return;
+    const sug = suggestFor(s, it); if (!sug || sug.w == null) return;
+    for (const x of it.sets) if (!x.done && x.t !== 'w') x.w = sug.w;
+    save(s);
+    render();
+    toast(`حطّينا ${isBw(it.ex) ? extraTxt(sug.w) : round2(sug.w) + ' كجم'} في الجولات الباقية`);
+  },
+  'swap-ex': (b) => {
+    const s = curSession(); if (!s) return;
+    const i = +b.dataset.i, it = s.items[i]; if (!it) return;
+    if (it.sets.some((x) => x.done)) { toast('خلّصت جولات في هذا التمرين. أضف التمرين الجديد بدال ما تبدّله.'); return; }
+    UI.pickFor = { kind: 'swap', sid: s.id, i, ex: it.ex };
+    UI.pickQuery = '';
+    push('pick');
   },
   'add-set': (b) => {
     const s = curSession(); if (!s) return;
@@ -1729,6 +2189,7 @@ const actions = {
     const it = s.items[+b.dataset.i]; if (!it || !it.sets.length) return;
     if (it.sets[it.sets.length - 1].done && !armed(b, 'متأكد؟ اضغط مرة ثانية')) return;
     it.sets.pop();
+    UI.setPanel = null;
     save(s);
     render();
   },
@@ -1736,6 +2197,7 @@ const actions = {
     const s = curSession(); if (!s) return;
     if (!armed(b, 'متأكد؟ اضغط مرة ثانية')) return;
     s.items.splice(+b.dataset.i, 1);
+    UI.setPanel = null;
     save(s);
     render();
   },
@@ -1756,9 +2218,11 @@ const actions = {
     UI.stack = ['today'];
     UI.sessionId = s.id;
     UI.screen = 'session';
+    UI.setPanel = null;
     render();
     window.scrollTo(0, document.body.scrollHeight);
-    toast('عافية عليك! انحفظ التمرين');
+    const nb = badgesFrom(s);
+    toast(nb.length ? `عافية عليك! شارة جديدة: ${nb[0][1]} ${nb[0][2]}${nb.length > 1 ? `، و${nb.length - 1} غيرها في الملخص` : ''}` : 'عافية عليك! انحفظ التمرين');
   },
   reopen: () => {
     const s = curSession(); if (!s) return;
@@ -1824,6 +2288,36 @@ const actions = {
 
   range: (b) => { UI.progRange = +b.dataset.r; render(); },
   'prog-metric': (b) => { UI.progMetric = b.dataset.m; render(); },
+  'rec-all': () => { UI.recAll = !UI.recAll; render(); },
+  // The picture is usually ready from when the summary showed; without the share sheet it downloads.
+  'share-sum': async (b) => {
+    const s = R.get(b.dataset.sid); if (!live(s)) return;
+    const c = await prepareShare(s).catch(() => null);
+    if (!c) { toast('ما قدرنا نجهّز الصورة'); return; }
+    if (navigator.canShare && navigator.canShare({ files: [c.file] })) {
+      try { await navigator.share({ files: [c.file] }); } catch (e) {
+        // iPhone opens the share sheet only straight from a tap; the picture is ready for the next one.
+        if (e && e.name === 'NotAllowedError') toast('الصورة جاهزة، اضغط «شارك» مرة ثانية');
+        else if (!e || e.name !== 'AbortError') toast('ما انفتحت المشاركة');
+      }
+      return;
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(c.file);
+    a.download = c.file.name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    toast('نزّلنا الصورة');
+  },
+  // A record picks its exercise in «تقدّم الأوزان» above and scrolls up to it.
+  'rec-pick': (b) => {
+    UI.progEx = b.dataset.ex;
+    render();
+    const sel = $('#prog-ex');
+    if (sel) sel.closest('.card').scrollIntoView({ block: 'start', behavior: 'smooth' });
+  },
   // Opened in place (no render), so a weight or reps being typed on the card stays.
   note: (b) => {
     const box = $(`#note-${b.dataset.i}`);
@@ -1927,7 +2421,7 @@ const actions = {
   'open-settings': () => push('settings'),
   pref: (b) => {
     const k = b.dataset.k;
-    setPref(k, k === 'theme' ? b.dataset.v : Number(b.dataset.v));
+    setPref(k, TEXT_PREFS.has(k) ? b.dataset.v : Number(b.dataset.v));
     render();
   },
   'reset-prefs': (b) => {
@@ -2070,6 +2564,18 @@ main.addEventListener('change', (e) => {
   } else if (el.dataset.f === 'body-m') {
     UI.bodyMeasure = el.value;
     render();
+  } else if (el.dataset.f === 'ex-rest') {
+    // A rest already counting down keeps going; the new one starts after the next set.
+    const s = curSession();
+    const it = s && s.items[+el.dataset.i];
+    if (!it) return;
+    if (+el.value) it.rest = +el.value; else delete it.rest;
+    save(s);
+  } else if (el.dataset.f === 'rt-rest') {
+    const it = UI.draft && UI.draft.items[+el.dataset.i];
+    if (!it) return;
+    if (+el.value) it.rest = +el.value; else delete it.rest;
+    UI.draft.changed = true;
   } else if (el.dataset.pref) {
     setPref(el.dataset.pref, el.checked);
     render();
