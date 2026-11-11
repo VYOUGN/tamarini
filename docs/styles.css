@@ -234,6 +234,7 @@ a.btn, a.back { text-decoration: none; }
 .day.planned b { border-color: var(--muted); }
 .day.rest b { border-style: dashed; }
 .day.trained b { background: var(--done); border-color: var(--done); color: var(--surface); }
+.day.missed b { border-color: var(--danger); color: var(--danger); }
 .day.today { color: var(--ink); font-weight: 800; }
 .day.today b { box-shadow: 0 0 0 3px var(--accent-soft); }
 .week-sum { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 12px; font-size: 0.9rem; }
@@ -249,6 +250,36 @@ a.btn, a.back { text-decoration: none; }
 
 .done-today { display: grid; gap: 4px; background: var(--done-soft); border-color: transparent; }
 .done-today h3 { margin: 0; color: var(--done); font-size: 1.05rem; }
+
+/* A workout that was missed: amber, above today's own. Each one has its «سوّه اليوم». */
+.card.missed { display: grid; gap: 12px; background: var(--warn-soft); border-color: transparent; }
+.missed .eyebrow { color: var(--warn); }
+.missed-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.missed-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.missed-list li > div { display: grid; gap: 2px; min-width: 0; }
+.missed-list b { font-size: 1.05rem; line-height: 1.4; }
+.missed-list span { font-size: 0.8rem; color: var(--warn); }
+.missed-list .btn { flex: none; min-height: 44px; padding: 0 14px; }
+.missed .btn.quiet { background: var(--surface); }
+.missed .fine { color: var(--ink); opacity: 0.8; }
+/* «ما أقدر أتمرّن اليوم»: a quiet link under the start button that opens into two choices. */
+.cant { margin-top: 8px; text-align: center; }
+.cant .link { color: var(--muted); font-size: 0.9rem; }
+.cant.open { display: grid; gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); text-align: start; }
+/* Under the week's circles when the week was postponed: the days that moved, and the way back. */
+.replan { display: grid; gap: 6px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.replan .plan-list { margin: 0; }
+.replan .link, .replan-note .link { padding: 2px 0; font-size: 0.85rem; }
+.replan-note { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+/* A list whose left side is a name, not a number: it may be long, so it's cut with an ellipsis. */
+.plan-list.names li > span:first-child { flex: none; }
+.plan-list.names li > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.replan .plan-list li > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.plan-list.flush { margin-bottom: 0; }
+.share-what h3, .shared-rt h3 { margin: 0 0 2px; font-size: 1.1rem; font-weight: 800; }
+.share-what h3 { margin-bottom: 10px; }
+.shared-rt .sub { margin: 0 0 10px; color: var(--muted); font-size: 0.85rem; }
+.eyebrow + .plan-list { margin-top: 8px; }
 
 /* ---------- workout ---------- */
 .wk-top {

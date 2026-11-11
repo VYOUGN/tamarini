@@ -206,6 +206,11 @@ function sane(r) {
     for (const it of r.items) saneRest(it);
   }
   if (r.type === 'schedule' && (!r.days || typeof r.days !== 'object')) r.days = {};
+  if (r.type === 'dayplan') {
+    const map = (o, keep) => Object.fromEntries(Object.entries(o && typeof o === 'object' ? o : {}).filter(([k, v]) => /^\d{4}-\d{2}-\d{2}$/.test(k) && keep(v)));
+    r.days = map(r.days, (v) => typeof v === 'string');
+    r.skipped = map(r.skipped, (v) => v === 1 || v === 2);
+  }
   if (r.type === 'prefs' && (!r.values || typeof r.values !== 'object')) r.values = {};
   if (r.type === 'body') {
     if (typeof r.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(r.date)) return r.deleted ? r : null;
@@ -280,7 +285,18 @@ function routineOnDay(dow) {
   const r = s && s.days[dow] ? R.get(s.days[dow]) : null;
   return live(r) && r.type === 'routine' ? r : null;
 }
-const routineFor = (k) => routineOnDay(dateOf(k).getDay());
+// The dates that differ from the weekly schedule live in one record: { id: 'dayplan', type: 'dayplan',
+// days: { '<date>': '<routine id>', or '' for rest }, skipped: { '<date>': 1 or 2 } }. Postponing a workout
+// moves the days after it within its week. skipped marks a missed workout that was let go (1) or moved (2).
+const dayPlan = () => { const r = R.get('dayplan'); return live(r) ? r : null; };
+// The routine for a date: that date's own change wins over the weekly schedule.
+function routineFor(k) {
+  const p = dayPlan();
+  if (!p || !(k in p.days)) return routineOnDay(dateOf(k).getDay());
+  const r = p.days[k] ? R.get(p.days[k]) : null;
+  return live(r) && r.type === 'routine' ? r : null;
+}
+// The weekly schedule's count. A postponed or skipped workout doesn't lower the week's target.
 const plannedDays = () => dayOrder().filter((d) => routineOnDay(d)).length;
 const sessions = () => [...R.values()].filter((r) => r.type === 'session' && live(r));
 const sessionsDesc = () => sessions().sort((a, b) => (a.date === b.date ? (b.startedAt || 0) - (a.startedAt || 0) : a.date < b.date ? 1 : -1));
@@ -300,6 +316,51 @@ function trainedDates(keep) {
 const ACTIVE_FOR_MS = 8 * 3600e3;
 const activeToday = () => sessionsDesc().find((s) => !s.finishedAt && (s.date === todayKey() || Date.now() - (s.startedAt || 0) < ACTIVE_FOR_MS)) || null;
 const hasUserData = () => [...R.values()].some((r) => r.type === 'routine' || r.type === 'session' || r.type === 'schedule' || r.type === 'body');
+
+/* ============================== missed and postponed workouts ============================== */
+function saveDayPlan(change) {
+  const r = dayPlan() || { id: 'dayplan', type: 'dayplan', days: {}, skipped: {} };
+  change(r);
+  const old = addDays(todayKey(), -21);
+  for (const o of [r.days, r.skipped]) for (const k of Object.keys(o)) if (k < old) delete o[k];
+  save(r);
+}
+// This week's planned workouts up to yesterday that weren't done, oldest first: [{ date, rt, skipped }].
+// A planned workout is done by its routine on its day, by its routine on another day this week (made up, or
+// done early), or by a free workout on its day. Nothing before the very first workout counts as missed.
+function weekMisses() {
+  const t = todayKey(), ws = weekStart(t);
+  const all = sessions().filter((s) => doneSets(s) > 0);
+  if (!all.length) return [];
+  const first = all.reduce((a, s) => (s.date < a ? s.date : a), t);
+  const plan = [];
+  for (let k = ws; k <= t; k = addDays(k, 1)) {
+    const rt = routineFor(k);
+    if (rt && k >= first) plan.push({ date: k, rt, ok: false });
+  }
+  const inPlan = new Set(plan.map((p) => p.rt.id));
+  const week = all.filter((s) => s.date >= ws && s.date <= t).map((s) => ({ date: s.date, rt: s.routine, used: false }));
+  const take = (p, test) => { const s = week.find((x) => !x.used && test(x)); if (s) { s.used = true; p.ok = true; } };
+  for (const p of plan) take(p, (x) => x.date === p.date && x.rt === p.rt.id);
+  for (const p of plan) if (!p.ok) take(p, (x) => x.rt === p.rt.id);
+  for (const p of plan) if (!p.ok) take(p, (x) => x.date === p.date && !inPlan.has(x.rt));
+  const skipped = (dayPlan() || { skipped: {} }).skipped;
+  return plan.filter((p) => !p.ok && p.date < t).map((p) => ({ date: p.date, rt: p.rt, skipped: !!skipped[p.date] }));
+}
+// The misses still waiting for an answer. None when the alert is off in settings.
+const openMisses = () => (prefs().missed === false ? [] : weekMisses().filter((m) => !m.skipped));
+// Pushes workouts later within this week: from `from` on, each day takes the next one waiting and its own
+// workout joins the wait. A rest day ends the chain; what's still waiting after the week's last day is dropped.
+function pushWeek(waiting, from) {
+  const we = addDays(weekStart(todayKey()), 6);
+  const days = {}, q = [...waiting];
+  for (let k = from; k <= we && q.length; k = addDays(k, 1)) {
+    const own = routineFor(k);
+    days[k] = q.shift().id;
+    if (own) q.push(own);
+  }
+  return { days, dropped: q };
+}
 
 /* ============================== body ============================== */
 // One record per day: { id: 'body_<date>', type: 'body', date, kg, neck, chest, waist, fat, bicepR, bicepL, ... }. 0 means not measured that day.
@@ -362,7 +423,8 @@ function bmiInfo(kgV, cm) {
 /* ============================== settings ============================== */
 // Settings are a normal record, so they're backed up and come back after a reinstall like everything else.
 // effort: how hard each set was, as 'rpe' (6–10) or 'rir' (reps left), or 'off'. suggest: the next-weight line.
-const PREF_DEFAULTS = { rest: 90, restSound: true, wake: false, coach: true, step: 2.5, plates: true, bar: 20, weekStart: 6, theme: 'auto', effort: 'off', suggest: true };
+// missed: the «فاتك تمرين» card and the ✕ on missed days.
+const PREF_DEFAULTS = { rest: 90, restSound: true, wake: false, coach: true, step: 2.5, plates: true, bar: 20, weekStart: 6, theme: 'auto', effort: 'off', suggest: true, missed: true };
 const TEXT_PREFS = new Set(['theme', 'effort']);
 function prefs() {
   const r = R.get('prefs');
@@ -826,7 +888,8 @@ async function importBackup(file) {
   }
   if (!meta.setup) await setMeta('setup', true);
   toast(apply.length ? `رجّعنا ${ofCnt(apply.length, 'rec')}` : 'كل اللي في الملف موجود عندك');
-  if (UI.screen === 'setup') go('today'); else render();
+  if (UI.screen !== 'setup') render();
+  else { go('today'); if (UI.planIn) openPlanIn(); }
 }
 
 /* ============================== UI state ============================== */
@@ -835,6 +898,9 @@ const UI = {
   sessionId: null, draft: null, pickFor: null, pickQuery: '', newExFor: null,
   setPanel: null, // '<session id>:<exercise>:<set>' whose type/effort panel is open
   recAll: false, shareCache: null, // { key, file } the finished workout's picture, made ahead of the tap
+  cantToday: false, // «ما أقدر أتمرّن اليوم» is open under today's workout
+  shareWhat: null, // { kind: 'plan' } or { kind: 'routine', id }: what the share screen is showing
+  planIn: null, planDraft: '', planErr: '', // a plan read from a link, the link being pasted, and why it failed
   progEx: null, progRange: 90, progMetric: 'load', linkEdit: false, dirtyRender: false, coach: null, linkDraft: '', rest: null,
   bodyRange: 90, bodyDate: null, bodyMore: false, bodyProfile: false, bodyMeasure: null, bodyAll: false,
   bodyDraft: null, // { date, vals } typed into the body form but not saved yet, so a re-render keeps it
@@ -842,7 +908,7 @@ const UI = {
 const isField = (el) => !!el && main.contains(el) && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
 
 function go(tab) {
-  UI.tab = tab; UI.screen = tab; UI.stack = []; UI.linkEdit = false; UI.bodyDate = null;
+  UI.tab = tab; UI.screen = tab; UI.stack = []; UI.linkEdit = false; UI.bodyDate = null; UI.cantToday = false;
   render();
   window.scrollTo(0, 0);
 }
@@ -912,6 +978,7 @@ function safeRender() {
 /* ---------- setup ---------- */
 function screenSetup() {
   const html = `<div class="setup">
+    ${iosLinkNote() || (UI.planIn ? '<div class="banner"><span>وصلك جدول من رابط. ابدأ من تحت، وبنعرضه لك على طول عشان تضيفه.</span></div>' : '')}
     <h2>هلا! هذا «تماريني»</h2>
     <p>جدول تمارينك، وجولاتك، وتقدّم أوزانك. يشتغل في النادي حتى بدون إنترنت.</p>
     <section class="card form">
@@ -933,25 +1000,85 @@ function screenSetup() {
 }
 
 /* ---------- today ---------- */
+// The dates from today to the week's end whose routine was changed by postponing or by «خلّه يوم راحة».
+// Days already gone stay as they were lived.
+function weekChanges() {
+  const p = dayPlan(), t = todayKey(), we = addDays(weekStart(t), 6);
+  return p ? Object.keys(p.days).filter((k) => k >= t && k <= we).sort() : [];
+}
+// Back to the weekly schedule from today on: after «رجّع الجدول الأصلي», or when the schedule itself is edited.
+// restoreMisses also brings back the misses that postponing had moved; the skipped ones stay skipped.
+function dropPostponed(restoreMisses) {
+  const p = dayPlan(), t = todayKey(), ws = weekStart(t);
+  const moved = (r) => Object.keys(r.skipped).filter((k) => restoreMisses && r.skipped[k] === 2 && k >= ws);
+  if (!p || (!Object.keys(p.days).some((k) => k >= t) && !moved(p).length)) return;
+  saveDayPlan((r) => {
+    for (const k of Object.keys(r.days)) if (k >= t) delete r.days[k];
+    for (const k of moved(r)) delete r.skipped[k];
+  });
+}
+// Under the week's circles when the week was changed: the coming days that moved, and the way back.
+function replanHTML() {
+  const t = todayKey();
+  if (!weekChanges().length) return '';
+  const moved = weekChanges().filter((k) => k > t).map((k) => ({ k, now: routineFor(k), was: routineOnDay(dateOf(k).getDay()) })).filter((x) => (x.now && x.now.id) !== (x.was && x.was.id));
+  return `<div class="replan">
+    <p class="fine"><b>جدول هالأسبوع معدّل.</b> ${moved.length ? 'الأيام الجاية:' : 'الأسبوع الجاي يرجع مثل ما هو.'}</p>
+    ${moved.length ? `<ul class="plan-list">${moved.map((x) => `<li><span>${x.k === addDays(t, 1) ? 'بكرة' : DAY_NAME[dateOf(x.k).getDay()]}</span><span>${x.now ? esc(x.now.name) : 'راحة'}</span></li>`).join('')}</ul>` : ''}
+    <div><button class="link" type="button" data-act="plan-reset">رجّع الجدول الأصلي</button></div>
+  </div>`;
+}
 function weekCard() {
-  const t = todayKey(), ws = weekStart(t), trained = trainedDates(), sc = streaks().cur;
-  let cells = '', planned = 0, got = 0, sets = 0, vol = 0;
+  const t = todayKey(), ws = weekStart(t), trained = trainedDates(), sc = streaks().cur, planned = plannedDays();
+  const missed = new Set(prefs().missed === false ? [] : weekMisses().map((m) => m.date));
+  let cells = '', got = 0, lost = 0, sets = 0, vol = 0;
   for (let i = 0; i < 7; i++) {
     const k = addDays(ws, i), dow = dateOf(k).getDay();
-    const isPlanned = !!routineOnDay(dow);
-    const tr = trained.has(k);
-    if (isPlanned) planned++;
+    const tr = trained.has(k), miss = !tr && missed.has(k);
     if (tr) got++;
-    cells += `<div class="day ${tr ? 'trained' : ''} ${isPlanned ? 'planned' : 'rest'} ${k === t ? 'today' : ''}"><span>${DAY_SHORT[dow]}</span><b>✓</b></div>`;
+    if (miss) lost++;
+    cells += `<div class="day ${tr ? 'trained' : miss ? 'missed' : ''} ${routineFor(k) ? 'planned' : 'rest'} ${k === t ? 'today' : ''}"><span>${DAY_SHORT[dow]}</span><b>${miss ? '✕' : '✓'}</b></div>`;
   }
   const we = addDays(ws, 6);
   for (const s of sessions()) if (s.date >= ws && s.date <= we) { sets += doneSets(s); vol += volume(s); }
   return `<section class="card">
     <div class="sec-title flush"><h2>هالأسبوع</h2><span class="num">${got} من ${planned}</span></div>
-    <div class="week" role="img" aria-label="تمرّنت ${cnt(got, 'day')} من ${ofCnt(planned, 'day')} مخطط لها هالأسبوع">${cells}</div>
-    <div class="week-sum"><span>${got ? cnt(got, 'day') + ' في النادي' : 'ما تمرّنت للحين هالأسبوع'}</span><span class="muted num">${cnt(sets, 'set')} · ${kg(vol)}</span></div>
+    <div class="week" role="img" aria-label="تمرّنت ${cnt(got, 'day')} من ${ofCnt(planned, 'day')} مخطط لها هالأسبوع${lost ? `، وفاتك ${cnt(lost, 'day')}` : ''}">${cells}</div>
+    <div class="week-sum"><span>${got ? cnt(got, 'day') + ' في النادي' : 'ما تمرّنت للحين هالأسبوع'}${lost ? ` · فاتك ${cnt(lost, 'day')}` : ''}</span><span class="muted num">${cnt(sets, 'set')} · ${kg(vol)}</span></div>
     ${sc >= 2 ? `<p class="fine streak">🔥 سلسلتك ${ofCnt(sc, 'week')} متتالية. لا تكسرها!</p>` : ''}
+    ${replanHTML()}
   </section>`;
+}
+// A planned workout from earlier this week that wasn't done: do it today, postpone the week behind it, or let it go.
+function missedCard() {
+  const miss = openMisses();
+  if (!miss.length) return '';
+  const t = todayKey(), we = addDays(weekStart(t), 6);
+  const from = trainedDates().has(t) ? addDays(t, 1) : t; // today is taken once a workout is done in it
+  const when = (d) => (d === addDays(t, -1) ? 'أمس' : `يوم ${DAY_NAME[dateOf(d).getDay()]}`);
+  return `<section class="card missed">
+    <p class="eyebrow">${miss.length === 1 ? 'فاتك تمرين' : `فاتك ${cnt(miss.length, 'ex')}`}</p>
+    <ul class="missed-list">${miss.map((m) => `<li><div><b>${esc(m.rt.name)}</b><span>${when(m.date)}</span></div><button class="btn primary" type="button" data-act="start" data-rt="${m.rt.id}">سوّه اليوم</button></li>`).join('')}</ul>
+    <div class="btn-row">
+      ${from < we ? '<button class="btn quiet" type="button" data-act="missed-shift">أجّل الجدول</button>' : ''}
+      <button class="btn quiet" type="button" data-act="missed-skip">${miss.length === 1 ? 'تخطّاه' : 'تخطّاهم'}</button>
+    </div>
+    ${from < we ? `<p class="fine">«أجّل الجدول» يخلّي «${esc(miss[0].rt.name)}» تمرين ${from === t ? 'اليوم' : 'بكرة'}، ويأجّل باقي تمارين الأسبوع بعده.</p>` : ''}
+  </section>`;
+}
+// Under today's «ابدأ التمرين»: a way out for a day you can't train, before it turns into a missed one.
+function cantTodayHTML(t) {
+  if (!UI.cantToday) return '<div class="cant"><button class="link" type="button" data-act="cant-today">ما أقدر أتمرّن اليوم</button></div>';
+  const last = t === addDays(weekStart(t), 6);
+  return `<div class="cant open">
+    <p class="fine"><b>يصير.</b> وش نسوي بتمرين اليوم؟</p>
+    <div class="btn-row">
+      ${last ? '' : '<button class="btn quiet" type="button" data-act="today-postpone">أجّله لبكرة</button>'}
+      <button class="btn quiet" type="button" data-act="today-rest">خلّه يوم راحة</button>
+    </div>
+    <p class="fine">${last ? 'اليوم آخر يوم في أسبوعك، فما فيه يوم يتأجّل له.' : '«أجّله لبكرة» يأجّل معه باقي تمارين الأسبوع يوم. والأسبوع الجاي يرجع جدولك مثل ما هو.'}</p>
+    <div><button class="link" type="button" data-act="cant-today">إلغاء</button></div>
+  </div>`;
 }
 function doneCard(s) {
   const mins = s.finishedAt && s.startedAt ? Math.max(1, Math.round((s.finishedAt - s.startedAt) / 60000)) : 0;
@@ -987,19 +1114,22 @@ function screenToday() {
   if (storageBroken) h += '<div class="banner"><span>التخزين على الجوال مو شغال، يمكن لأنك فاتح الصفحة في التصفح الخاص. افتح التطبيق من الشاشة الرئيسية.</span></div>';
   else if (!meta.sync) h += '<div class="banner"><span>تقدمك محفوظ على هذا الجوال بس. فعّل النسخ الاحتياطي عشان ما يضيع لو حذفت التطبيق.</span><button type="button" data-act="go" data-to="log">فعّله</button></div>';
   for (const s of doneToday) h += doneCard(s);
+  h += missedCard();
+  const plan = dayPlan(), moved = !!plan && t in plan.days; // today's workout isn't the weekly schedule's
   if (rt) {
     h += `<section class="card hero">
-      <p class="eyebrow">${doneToday.length ? 'تمرين اليوم حسب الجدول' : 'تمرين اليوم'}</p>
+      <p class="eyebrow">${doneToday.length ? 'تمرين اليوم حسب الجدول' : moved ? 'تمرين اليوم، بعد التأجيل' : 'تمرين اليوم'}</p>
       <h2>${esc(rt.name)}</h2>
       <p class="sub">${cnt(rt.items.length, 'ex')} · ${cnt(routineSets(rt), 'set')}</p>
       <ul class="plan-list">${rt.items.map((it) => `<li><span>${esc(exInfo(it.ex).name)}</span><span class="num" dir="ltr">${it.sets} × ${it.reps || '–'}</span></li>`).join('')}</ul>
-      <button class="btn primary block" type="button" data-act="start" data-rt="${rt.id}">${doneToday.length ? 'ابدأه مرة ثانية' : 'ابدأ التمرين'}</button>
+      <button class="btn primary block" type="button" data-act="start" data-rt="${rt.id}">${doneToday.some((s) => s.routine === rt.id) ? 'ابدأه مرة ثانية' : 'ابدأ التمرين'}</button>
+      ${doneToday.length ? '' : cantTodayHTML(t)}
     </section>`;
   } else {
     h += `<section class="card hero is-rest">
       <p class="eyebrow">اليوم</p>
       <h2>يوم راحة</h2>
-      <p class="sub">العضل يكبر وأنت مرتاح. وإذا تبي تتمرّن، اختر تمرين من تحت.</p>
+      <p class="sub">${moved && routineOnDay(dateOf(t).getDay()) ? 'خلّيت اليوم راحة بدل تمرينه. وإذا غيّرت رايك، «رجّع الجدول الأصلي» تحت، أو اختر تمرين.' : 'العضل يكبر وأنت مرتاح. وإذا تبي تتمرّن، اختر تمرين من تحت.'}</p>
     </section>`;
   }
   h += weighCard() + weekCard();
@@ -1321,6 +1451,7 @@ function screenSettings() {
       ${sw('wake', 'الشاشة تظل شغّالة', wakeOk ? 'وقت التمرين بس، عشان ما تفتح القفل كل جولة' : 'جهازك ما يدعم هذي الخاصية', !wakeOk)}
       ${sw('coach', 'جمل تحفيزية', 'تحت شريط التقدّم وقت التمرين')}
       ${sw('suggest', 'اقتراح الوزن الجاي', 'سطر تحت «آخر مرة» يقول لك تزيد الوزن أو العدّات، أو تاخذ أسبوع أخف')}
+      ${sw('missed', 'تنبيه التمرين الفايت', 'بطاقة في «اليوم» لما يفوتك تمرين من جدولك: تسويه، أو تأجّل الجدول، أو تتخطّاه')}
       ${row('صعوبة الجولة', 'بعد كل جولة تختار كم كانت صعبة. RPE من 6 إلى 10، وRIR كم عدّة كان باقي لك', seg('effort', [['off', 'إيقاف'], ['rpe', 'RPE'], ['rir', 'RIR']], 'صعوبة الجولة'))}
       ${row('خطوة زر + و − للوزن', 'كم كيلو يزيد أو ينقص الوزن مع كل ضغطة', seg('step', [[1, '1'], [1.25, '1.25'], [2.5, '2.5'], [5, '5']], 'خطوة الوزن'))}
     </section>
@@ -1383,7 +1514,10 @@ function screenPlan() {
   let h = `<div class="sec-title"><h2>جدول الأسبوع</h2><span>يبدأ ${DAY_NAME[prefs().weekStart]}</span></div>
     <section class="card"><ul class="week-plan">
       ${dayOrder().map((d) => `<li class="${d === tdow ? 'today' : ''}"><label class="dname" for="day-${d}">${DAY_NAME[d]}</label><select class="field" id="day-${d}" data-f="day" data-day="${d}">${opts(sch && sch.days[d])}</select></li>`).join('')}
-    </ul></section>`;
+    </ul>
+    ${weekChanges().length ? '<p class="fine replan-note">هالأسبوع معدّل بتأجيل، وهذا جدولك الأصلي. أي تغيير هنا يلغي التأجيل. <button class="link" type="button" data-act="plan-reset">رجّع الجدول الأصلي الحين</button></p>' : ''}
+    </section>
+    <div class="btn-row"><button class="btn quiet" type="button" data-act="plan-share">شارك الجدول</button><button class="btn quiet" type="button" data-act="plan-in-open">استورد جدول</button></div>`;
   h += `<div class="sec-title"><h2>التمارين اليومية</h2><span>${rts.length}</span></div>`;
   h += rts.length ? rts.map((r) => {
     const days = dayOrder().filter((d) => sch && sch.days[d] === r.id).map((d) => DAY_NAME[d]).join('، ');
@@ -1404,6 +1538,193 @@ function screenPlan() {
   }
   h += '</section><button class="btn quiet block" type="button" data-act="new-ex">+ أضف تمرين للمكتبة</button>';
   return { title: 'الجدول', subtitle: 'جدول الأسبوع والتمارين اليومية', html: h, tabs: true };
+}
+
+/* ---------- sharing a plan ---------- */
+// A plan travels inside a link, …/#plan=<base64url of JSON>, so it needs no server. The JSON is
+// { v: 1, r: [[name, [[exercise, sets, reps, rest?], …]], …], d: { weekday: index in r }, x: [[name, muscle, kind], …] }.
+// An exercise is a built-in id without its b_, or a number: an index into x, the sharer's own exercises
+// (kind 1 = Olympic bar, 2 = bodyweight). Weights, notes and workouts stay on the sharer's phone.
+function toB64u(s) {
+  let bin = '';
+  for (const b of new TextEncoder().encode(s)) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+const fromB64u = (c) => new TextDecoder().decode(Uint8Array.from(atob(c.replace(/-/g, '+').replace(/_/g, '/')), (ch) => ch.charCodeAt(0)));
+// What the share screen shares: one routine, or the week (its routines in week order, with their days).
+// With no day set in the weekly schedule, every routine goes, without days.
+function shareSubject() {
+  const w = UI.shareWhat || { kind: 'plan' };
+  if (w.kind === 'routine') { const rt = R.get(w.id); return live(rt) && rt.type === 'routine' ? { rts: [rt], days: false } : null; }
+  const rts = [];
+  for (const d of dayOrder()) { const rt = routineOnDay(d); if (rt && !rts.includes(rt)) rts.push(rt); }
+  if (rts.length) return { rts, days: true };
+  return routines().length ? { rts: routines(), days: false } : null;
+}
+const linkOf = (code) => `${location.origin}${location.pathname}#plan=${code}`;
+function planLink(sub) {
+  const x = [], xi = new Map();
+  const ref = (id) => {
+    if (BUILTIN_MAP.has(id)) return id.slice(2);
+    const e = R.get(id);
+    if (!live(e) || e.type !== 'exercise') return null; // a deleted exercise isn't shared
+    if (!xi.has(id)) { xi.set(id, x.length); x.push([e.name, e.muscle, e.bar ? 1 : e.bw ? 2 : 0]); }
+    return xi.get(id);
+  };
+  const p = { v: 1, r: sub.rts.map((rt) => [rt.name, rt.items.map((it) => [ref(it.ex), it.sets, it.reps || 0, ...(it.rest ? [it.rest] : [])]).filter((it) => it[0] != null)]) };
+  if (sub.days) { p.d = {}; for (const d of dayOrder()) { const i = sub.rts.indexOf(routineOnDay(d)); if (i >= 0) p.d[d] = i; } }
+  if (x.length) p.x = x;
+  return linkOf(toB64u(JSON.stringify(p)));
+}
+// The message that goes with the link, readable on its own. The marks around 4×8 keep it in that order
+// inside an Arabic line in any chat app.
+function shareText(sub, link) {
+  const lines = [];
+  if (sub.days) {
+    lines.push('جدولي في «تماريني» 💪');
+    for (const d of dayOrder()) { const rt = routineOnDay(d); lines.push(`${DAY_NAME[d]}: ${rt ? rt.name : 'راحة'}`); }
+  } else if (sub.rts.length === 1) {
+    lines.push(`تمرين «${sub.rts[0].name}» من «تماريني» 💪`);
+    for (const it of sub.rts[0].items) lines.push(`${exInfo(it.ex).name} ⁦${it.sets}×${it.reps || '–'}⁩`);
+  } else {
+    lines.push('تماريني اليومية في «تماريني» 💪');
+    for (const rt of sub.rts) lines.push(`• ${rt.name}`);
+  }
+  return [...lines, '', 'افتح الرابط وضيفه عندك:', link].join('\n');
+}
+// Reads a plan out of a link, a whole pasted message, or a bare code. It comes from someone else, so every
+// field is checked: { rts: [{ name, items: [{ ex, sets, reps, rest? }] }], days: { weekday: routine } or null,
+// lost: exercises it couldn't place, code }. ex is a built-in exercise, or { name, muscle, bar, bw } to add.
+function readPlan(text) {
+  const m = /plan=([\w-]{8,})/.exec(text) || /^\s*([\w-]{40,})\s*$/.exec(text);
+  if (!m || m[1].length > 40000) return null;
+  let p = null;
+  try { p = JSON.parse(fromB64u(m[1])); } catch (e) { return null; }
+  if (!p || p.v !== 1 || !Array.isArray(p.r)) return null;
+  const str = (v) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, 60);
+  const own = (Array.isArray(p.x) ? p.x : []).slice(0, 100).map((e) => (Array.isArray(e) && str(e[0]) && MUSCLES.includes(e[1]) ? { name: str(e[0]), muscle: e[1], bar: e[2] === 1, bw: e[2] === 2 } : null));
+  let lost = 0;
+  const all = p.r.slice(0, 14).map((r) => {
+    if (!Array.isArray(r) || !Array.isArray(r[1]) || !str(r[0])) return null;
+    const items = [];
+    for (const it of r[1].slice(0, 40)) {
+      const ex = !Array.isArray(it) ? null : typeof it[0] === 'number' ? own[it[0]] : BUILTIN_MAP.get('b_' + it[0]);
+      if (!ex) { lost++; continue; }
+      const o = { ex, sets: Math.min(20, Math.max(1, Math.round(toNum(it[1])))), reps: Math.min(200, Math.round(toNum(it[2]))) };
+      const rest = Math.round(toNum(it[3]));
+      if (rest > 0 && rest <= 900) o.rest = rest;
+      items.push(o);
+    }
+    return items.length ? { name: str(r[0]), items } : null;
+  });
+  const rts = all.filter(Boolean);
+  if (!rts.length) return null;
+  let days = null;
+  if (p.d && typeof p.d === 'object') {
+    for (let d = 0; d < 7; d++) { const rt = Number.isInteger(p.d[d]) ? all[p.d[d]] : null; if (rt) (days = days || {})[d] = rt; }
+  }
+  return { rts, days, lost, code: m[1] };
+}
+// Adds a shared plan's routines, and the sharer's own exercises they use. withDays also makes its week the
+// weekly schedule, and clears away the starter routines that were never touched or used. A routine that's
+// already here, same name and exercises, isn't added twice. Returns how many routines are new.
+function addSharedPlan(plan, withDays) {
+  const mine = exercises();
+  const idOf = (e) => {
+    if (e.id) return e.id;
+    let hit = mine.find((m) => norm(m.name) === norm(e.name) && m.muscle === e.muscle && !!m.bar === e.bar && !!m.bw === e.bw);
+    if (!hit) { hit = { id: uid('ex'), type: 'exercise', name: e.name, muscle: e.muscle, bar: e.bar, bw: e.bw }; save(hit); mine.push(hit); }
+    return hit.id;
+  };
+  const sig = (name, items) => `${norm(name)}|${items.map((it) => `${it.ex}:${it.sets}:${it.reps || 0}:${it.rest || 0}`).join(',')}`;
+  const have = routines(), ids = new Map();
+  let added = 0;
+  plan.rts.forEach((r, i) => {
+    const items = r.items.map((it) => ({ ex: idOf(it.ex), sets: it.sets, reps: it.reps, weight: 0, ...(it.rest ? { rest: it.rest } : {}) }));
+    let rec = have.find((o) => sig(o.name, o.items) === sig(r.name, items));
+    if (!rec) { rec = { id: uid('rt'), type: 'routine', name: r.name, createdAt: Date.now() + i, items }; save(rec); added++; }
+    ids.set(r, rec.id);
+  });
+  if (withDays && plan.days) {
+    const kept = new Set(ids.values()), used = new Set(sessions().map((s) => s.routine));
+    for (const o of have) if (o.updatedAt === 1 && !kept.has(o.id) && !used.has(o.id)) { o.deleted = true; save(o); }
+    const sch = scheduleRec() || { id: 'schedule', type: 'schedule', days: {} };
+    sch.days = {};
+    for (let d = 0; d < 7; d++) sch.days[d] = plan.days[d] ? ids.get(plan.days[d]) : null;
+    save(sch);
+    dropPostponed();
+  }
+  return added;
+}
+const exRows = (items, name, cls = '') => `<ul class="plan-list ${cls}">${items.map((it) => `<li><span>${esc(name(it))}</span><span class="num" dir="ltr">${it.sets} × ${it.reps || '–'}</span></li>`).join('')}</ul>`;
+function screenPlanShare() {
+  const sub = shareSubject();
+  if (!sub) return { title: 'شارك الجدول', html: '<p class="empty">ما فيه شي تشاركه للحين. سوّ تمرين يومي أول من «الجدول».</p>', back: true };
+  const one = !sub.days && sub.rts.length === 1;
+  const body = sub.days ? `<ul class="plan-list names">${dayOrder().map((d) => { const rt = routineOnDay(d); return `<li><span>${DAY_NAME[d]}</span><span>${rt ? esc(rt.name) : 'راحة'}</span></li>`; }).join('')}</ul>`
+    : one ? `<h3>${esc(sub.rts[0].name)}</h3>${exRows(sub.rts[0].items, (it) => exInfo(it.ex).name)}`
+    : `<ul class="plan-list names">${sub.rts.map((rt) => `<li><span>${esc(rt.name)}</span><span>${cnt(rt.items.length, 'ex')}</span></li>`).join('')}</ul>`;
+  const h = `<section class="card share-what">
+      <p class="eyebrow">${sub.days ? 'بتشارك جدول أسبوعك' : one ? 'بتشارك هذا التمرين اليومي' : 'بتشارك تمارينك اليومية'}</p>
+      ${body}
+      <p class="fine">اللي يفتح الرابط يشوف ${sub.days ? 'الجدول وتمارينه' : 'التمارين'} بجولاتها وعدّاتها، ويضيفها في تطبيقه بضغطة. أوزانك وملاحظاتك وسجل تمارينك ما ينرسلون.</p>
+    </section>
+    ${navigator.share ? '<button class="btn primary block" type="button" data-act="plan-send">شارك</button>' : ''}
+    <button class="btn ${navigator.share ? 'quiet' : 'primary'} block" type="button" data-act="plan-copy">انسخ الرابط</button>
+    <section class="card form"><label for="share-link">الرابط
+      <textarea class="field" id="share-link" rows="4" readonly>${esc(planLink(sub))}</textarea></label></section>`;
+  return { title: sub.days ? 'شارك الجدول' : 'شارك التمرين', subtitle: one ? sub.rts[0].name : 'برابط يفتحه صاحبك', html: h, back: true };
+}
+// Safari on iPhone keeps its own storage, apart from the app on the home screen: a plan added in Safari never
+// reaches the installed app. So a plan link opened in Safari says how to carry it over.
+const inIosBrowser = () => (/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1))
+  && navigator.standalone !== true && !matchMedia('(display-mode: standalone)').matches;
+const iosLinkNote = () => (inIosBrowser() && UI.planIn
+  ? '<div class="banner"><span>على الآيفون: اللي ينضاف هنا في Safari ما يوصل «تماريني» اللي على شاشتك الرئيسية. انسخ الرابط، وافتح التطبيق من أيقونته، ومن «الجدول» اضغط «استورد جدول» والصقه. ولو ما ثبّته للحين: زر المشاركة، ثم «إضافة إلى الشاشة الرئيسية».</span><button type="button" data-act="plan-copy-in">انسخ الرابط</button></div>' : '');
+// «استورد جدول»: a field to paste the link into, then what the link holds, with the buttons that add it.
+function screenPlanIn() {
+  const p = UI.planIn;
+  if (!p) {
+    return { title: 'استورد جدول', subtitle: 'من رابط وصلك', back: true, html: `<section class="card form">
+      <label for="plan-link">الصق الرابط اللي وصلك
+        <textarea class="field" id="plan-link" data-f="plan-link" rows="4" placeholder="https://…#plan=…" autocapitalize="off" autocomplete="off" spellcheck="false">${esc(UI.planDraft)}</textarea></label>
+      ${navigator.clipboard && navigator.clipboard.readText ? '<button class="btn quiet block" type="button" data-act="plan-paste">الصق اللي نسخته</button>' : ''}
+      <button class="btn primary block" type="button" data-act="plan-read">اعرض الجدول</button>
+      <p class="msg err" role="status">${esc(UI.planErr)}</p>
+      <p class="fine">صاحبك يضغط «شارك الجدول» في تبويب «الجدول» عنده ويرسل لك الرابط. الصق الرسالة كلها، أو الرابط لحاله.</p>
+    </section>` };
+  }
+  const one = !p.days && p.rts.length === 1;
+  let h = iosLinkNote();
+  const lost =p.lost ? `<p class="fine">بعض تمارين الرابط ما عرفناها (${p.lost})، فما انضافت. حدّث التطبيق عندك وجرّب الرابط مرة ثانية.</p>` : '';
+  const add = lost + (p.days
+    ? `<button class="btn primary block" type="button" data-act="plan-add" data-days="1">ضيفه وخلّه جدولي</button>
+       <button class="btn quiet block" type="button" data-act="plan-add">ضيف التمارين اليومية بس</button>
+       <p class="fine">«خلّه جدولي» يغيّر أيام أسبوعك لهذا الجدول. سجلّك ما يتغيّر، وتمارينك اليومية تبقى في «الجدول»، إلا الجاهزة اللي ما لمستها ولا تمرّنت عليها.</p>`
+    : `<button class="btn primary block" type="button" data-act="plan-add">${one ? 'ضيفه لتماريني اليومية' : 'ضيفهم لتماريني اليومية'}</button>
+       <p class="fine">${one ? 'بعد الإضافة تلقاه في «الجدول» تحت «التمارين اليومية»، وتحطه في اليوم اللي تبيه من «جدول الأسبوع».' : 'بعد الإضافة تلقاهم في «الجدول» تحت «التمارين اليومية»، وتوزّعهم على الأيام من «جدول الأسبوع».'}</p>`);
+  // A week's buttons come right under its days: the routines below can be a long scroll.
+  if (p.days) h += `<section class="card"><p class="eyebrow">جدول الأسبوع</p><ul class="plan-list names flush">${dayOrder().map((d) => `<li><span>${DAY_NAME[d]}</span><span>${p.days[d] ? esc(p.days[d].name) : 'راحة'}</span></li>`).join('')}</ul></section>${add}`;
+  h += `<div class="sec-title"><h2>${one ? 'التمرين اليومي' : 'التمارين اليومية'}</h2><span>${p.rts.length}</span></div>`;
+  for (const r of p.rts) h += `<section class="card shared-rt"><h3>${esc(r.name)}</h3><p class="sub">${cnt(r.items.length, 'ex')} · ${cnt(r.items.reduce((a, it) => a + it.sets, 0), 'set')}</p>${exRows(r.items, (it) => it.ex.name, 'flush')}</section>`;
+  if (!p.days) h += add;
+  return { title: 'جدول وصلك', subtitle: p.days ? 'جدول أسبوع كامل' : one ? p.rts[0].name : 'تمارين يومية', html: h, back: true };
+}
+function openPlanIn() {
+  UI.tab = 'plan'; UI.stack = ['plan']; UI.screen = 'planin';
+  render();
+  window.scrollTo(0, 0);
+}
+// A shared plan arrives as …/#plan=<code>. The address is cleaned, so a reload doesn't bring it back.
+function takePlanLink() {
+  const m = /[#&]plan=([\w-]+)/.exec(location.hash);
+  if (!m) return false;
+  // window.history: in this file `history` is the exercise's history.
+  try { window.history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+  const p = readPlan('plan=' + m[1]);
+  if (!p) { toast('رابط الجدول ناقص أو خربان. اطلب من صاحبك يرسله مرة ثانية.'); return false; }
+  UI.planIn = p;
+  return true;
 }
 
 /* ---------- routine editor ---------- */
@@ -1458,6 +1779,7 @@ function screenRoutine() {
   if (!d.items.length) h += '<p class="empty">أضف التمارين اللي تسويها في هذا اليوم.</p>';
   h += '<button class="btn quiet block" type="button" data-act="rt-add-ex">+ أضف تمرين</button>';
   h += '<button class="btn primary block" type="button" data-act="rt-save">حفظ</button>';
+  if (!d.isNew) h += '<button class="btn quiet block" type="button" data-act="rt-share">شارك هذا التمرين اليومي</button>';
   if (!d.isNew) h += '<button class="btn danger block" type="button" data-act="rt-delete">حذف هذا التمرين اليومي</button>';
   h += '<p class="fine">الوزن هنا للبداية بس. لما تتمرّن، التطبيق يعبّي وزن آخر مرة تلقائيًا.</p>';
   return { title: d.isNew ? 'تمرين يومي جديد' : 'تعديل التمرين اليومي', subtitle: d.name, html: h, back: true };
@@ -2052,6 +2374,7 @@ function screenLog() {
 const SCREENS = {
   setup: screenSetup, today: screenToday, plan: screenPlan, progress: screenProgress, log: screenLog,
   session: screenSessionPushed, routine: screenRoutine, pick: screenPick, newex: screenNewEx, settings: screenSettings,
+  planshare: screenPlanShare, planin: screenPlanIn,
 };
 
 /* ============================== actions ============================== */
@@ -2100,6 +2423,44 @@ const actions = {
   go: (b) => go(b.dataset.to),
   start: (b) => startSession(b.dataset.rt),
   'open-session': (b) => { UI.sessionId = b.dataset.sid; push('session'); },
+
+  // «أجّل الجدول»: what was missed comes first, from today (from tomorrow once today has a workout in it).
+  'missed-shift': () => {
+    const miss = openMisses(); if (!miss.length) return;
+    const t = todayKey(), from = trainedDates().has(t) ? addDays(t, 1) : t;
+    const { days, dropped } = pushWeek(miss.map((m) => m.rt), from);
+    saveDayPlan((p) => { Object.assign(p.days, days); for (const m of miss) p.skipped[m.date] = 2; });
+    UI.cantToday = false;
+    render();
+    toast(`تأجّل الجدول. تمرين ${from === t ? 'اليوم' : 'بكرة'}: ${miss[0].rt.name}${dropped.length ? `. وما بقى مكان هالأسبوع لـ ${dropped.map((r) => r.name).join('، ')}` : ''}`);
+  },
+  'missed-skip': () => {
+    const miss = openMisses(); if (!miss.length) return;
+    saveDayPlan((p) => { for (const m of miss) p.skipped[m.date] = 1; });
+    render();
+    toast('تمام، تخطّيناه. كمّل على جدولك');
+  },
+  'cant-today': () => { UI.cantToday = !UI.cantToday; render(); },
+  'today-postpone': () => {
+    const t = todayKey(), rt = routineFor(t); if (!rt) return;
+    const { days, dropped } = pushWeek([rt], addDays(t, 1));
+    saveDayPlan((p) => { p.days[t] = ''; Object.assign(p.days, days); });
+    UI.cantToday = false;
+    render();
+    toast(`أجّلناه لبكرة${dropped.length ? `. وما بقى مكان هالأسبوع لـ ${dropped.map((r) => r.name).join('، ')}` : '، واليوم راحة'}`);
+  },
+  'today-rest': () => {
+    saveDayPlan((p) => { p.days[todayKey()] = ''; });
+    UI.cantToday = false;
+    render();
+    toast('خلّينا اليوم راحة');
+  },
+  'plan-reset': () => {
+    dropPostponed(true);
+    UI.cantToday = false;
+    render();
+    toast('رجع جدول الأسبوع مثل ما هو');
+  },
 
   'w+': (b) => tapStep(b),
   'w-': (b) => tapStep(b),
@@ -2267,6 +2628,56 @@ const actions = {
     toast('انحذف');
   },
 
+  'plan-share': () => { UI.shareWhat = { kind: 'plan' }; push('planshare'); },
+  // The routine is saved first, so the link carries what's on screen.
+  'rt-share': () => {
+    if (!commitDraft(true)) { toast('أضف تمرين واحد على الأقل، وبعدها شاركه'); return; }
+    UI.shareWhat = { kind: 'routine', id: UI.draft.id };
+    push('planshare');
+  },
+  'plan-send': async () => {
+    const sub = shareSubject(); if (!sub) return;
+    try { await navigator.share({ text: shareText(sub, planLink(sub)) }); }
+    catch (e) { if (!e || e.name !== 'AbortError') actions['plan-copy'](); }
+  },
+  'plan-copy': async () => {
+    const sub = shareSubject(); if (!sub) return;
+    try { await navigator.clipboard.writeText(planLink(sub)); toast('نسخنا الرابط. الصقه لصاحبك'); }
+    catch (e) { const el = $('#share-link'); if (el) { el.focus(); el.select(); } toast('انسخ الرابط من الخانة تحت'); }
+  },
+  'plan-in-open': () => { UI.planIn = null; UI.planDraft = ''; UI.planErr = ''; push('planin'); },
+  // Fills the field from the clipboard and reads it right away. The phone may ask before it lets the app paste.
+  'plan-paste': async () => {
+    let text = '';
+    try { text = await navigator.clipboard.readText(); } catch (e) { toast('ما قدرنا نقرأ اللي نسخته. الصقه في الخانة بنفسك'); return; }
+    const el = $('#plan-link');
+    if (!el) return;
+    el.value = text;
+    actions['plan-read']();
+  },
+  'plan-read': () => {
+    const el = $('#plan-link');
+    if (el) UI.planDraft = el.value;
+    const p = readPlan(UI.planDraft);
+    UI.planErr = p ? '' : UI.planDraft.trim() ? 'ما قدرنا نقرأ الرابط. تأكد إنك نسخته كامل، من https إلى آخر حرف.' : 'الصق الرابط أول.';
+    UI.planIn = p;
+    render();
+    if (p) window.scrollTo(0, 0);
+  },
+  'plan-copy-in': async () => {
+    if (!UI.planIn) return;
+    try { await navigator.clipboard.writeText(linkOf(UI.planIn.code)); toast('نسخنا الرابط. الصقه داخل التطبيق'); }
+    catch (e) { toast('ما قدرنا ننسخ. انسخ الرابط من الرسالة اللي وصلتك'); }
+  },
+  'plan-add': (b) => {
+    const p = UI.planIn; if (!p) return;
+    const withDays = b.dataset.days === '1';
+    const added = addSharedPlan(p, withDays);
+    UI.planIn = null;
+    go('plan');
+    toast(withDays ? 'صار جدولك. تمرين اليوم تلقاه في «اليوم»' : added ? `انضاف ${cnt(added, 'ex')} لتمارينك اليومية` : 'موجود عندك من قبل، فما كرّرناه');
+  },
+
   pick: (b) => pickExercise(b.dataset.ex),
   'new-ex': () => { UI.newExFor = UI.screen === 'pick' ? UI.pickFor : null; push('newex'); },
   'ne-save': () => {
@@ -2392,11 +2803,13 @@ const actions = {
     await setMeta('setup', true);
     go('today');
     toast(res.got && !seeded ? `رجّعنا ${ofCnt(res.got, 'rec')}` : 'انربط. جهّزنا لك جدول تقدر تعدّل عليه');
+    if (UI.planIn) openPlanIn(); // the plan from the link that brought them here
   },
   'setup-skip': async () => {
     await seedIfEmpty();
     await setMeta('setup', true);
     go('today');
+    if (UI.planIn) openPlanIn();
   },
   connect: async (b) => {
     b.disabled = true;
@@ -2541,6 +2954,8 @@ main.addEventListener('input', (e) => {
     UI.draft.changed = true;
   } else if (f === 'link') {
     UI.linkDraft = el.value;
+  } else if (f === 'plan-link') {
+    UI.planDraft = el.value;
   } else if (f === 'pick-q') {
     UI.pickQuery = el.value;
     $('#pick-list').innerHTML = pickListHTML();
@@ -2553,6 +2968,7 @@ main.addEventListener('change', (e) => {
     const sch = scheduleRec() || { id: 'schedule', type: 'schedule', days: {} };
     sch.days = Object.assign({}, sch.days, { [el.dataset.day]: el.value || null });
     save(sch);
+    dropPostponed();
     render();
   } else if (el.dataset.f === 'prog-ex') {
     UI.progEx = el.value;
@@ -2591,6 +3007,12 @@ $('#tabs').addEventListener('click', (e) => {
   const b = e.target.closest('[data-tab]');
   if (b) { if (UI.screen === 'routine') commitDraft(true); go(b.dataset.tab); }
 });
+// A plan link opened while the app is already open in this tab.
+window.addEventListener('hashchange', () => {
+  if (!takePlanLink()) return;
+  if (UI.screen === 'routine') commitDraft(true);
+  if (UI.screen === 'setup') render(); else openPlanIn();
+});
 window.addEventListener('online', () => Sync.run());
 window.addEventListener('offline', renderSyncState);
 document.addEventListener('visibilitychange', () => {
@@ -2618,6 +3040,8 @@ async function boot() {
   if (meta.prefs && meta.prefs.coach === false && !R.get('prefs')) setPref('coach', false);
   applyTheme();
   UI.screen = meta.setup || storageBroken ? 'today' : 'setup';
+  // Opened from a shared plan's link: show the plan. A first-timer sets up first, then sees it.
+  if (takePlanLink() && UI.screen === 'today') { UI.tab = 'plan'; UI.stack = ['plan']; UI.screen = 'planin'; }
   render();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
